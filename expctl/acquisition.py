@@ -26,6 +26,7 @@ from .control import RateFeedback
 from .datalog import CsvLogger
 from .devices import Heater, HeaterReading, QCM, QCMChannel
 from .rate import ThicknessRate
+from .units import RATE_TO_DISPLAY
 from .samples import CellSample, Sample
 
 log = logging.getLogger(__name__)
@@ -331,7 +332,8 @@ class Acquisition:
         if self._feedback_on[index]:
             fb.target = target
             log.info(
-                "%s: rate target changed to %.3g Å/min.", cell.name, target * 60
+                "%s: rate target changed to %.3g Å/min.",
+                cell.name, target * RATE_TO_DISPLAY,
             )
             return
 
@@ -351,7 +353,7 @@ class Acquisition:
         self._written_setpoint[index] = setpoint
         log.info(
             "%s: rate feedback ON, target %.3g Å/min, starting from %.1f °C.",
-            cell.name, target * 60, setpoint,
+            cell.name, target * RATE_TO_DISPLAY, setpoint,
         )
 
     def _do_disable_feedback(self, index: int) -> None:

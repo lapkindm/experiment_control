@@ -35,20 +35,9 @@ from .acquisition import Acquisition
 from .config import CellConfig, Config
 from .datalog import CsvLogger
 from .samples import CellSample, Sample
+from .units import DISPLAY_SCALE, RATE_TO_DISPLAY, THICKNESS_TO_DISPLAY
 
 COLORS = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e", "#8c564b"]
-
-# Internally (and in the log) the QCM units are used: rate in Å/s,
-# thickness in kÅ. The GUI shows rates in Å/min and thickness in Å.
-RATE_TO_DISPLAY = 60.0          # Å/s -> Å/min
-THICKNESS_TO_DISPLAY = 1000.0   # kÅ -> Å
-
-DISPLAY_SCALE = {
-    "rate": RATE_TO_DISPLAY,
-    "rate_target": RATE_TO_DISPLAY,
-    "qcm_rate": RATE_TO_DISPLAY,
-    "thickness": THICKNESS_TO_DISPLAY,
-}
 
 WINDOWS = [
     ("5 min", 300),

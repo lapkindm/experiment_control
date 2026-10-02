@@ -4,6 +4,8 @@ CSV data logging.
 Each logging session writes one CSV file, ``<directory>/<timestamp>.csv``.
 Rows are flushed immediately, so the file is complete up to the last
 sample even if the program crashes.
+
+Units: °C, %, Hz, rates in Å/min, thickness in Å (see ``expctl.units``).
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .samples import Sample
+from .units import DISPLAY_SCALE
 
 CELL_FIELDS = [
     ("T", "temperature"),
@@ -37,11 +40,14 @@ def columns(cell_keys: list[str]) -> list[str]:
     return cols
 
 
-def _format(value) -> str:
+def _format(value, scale: float = 1.0) -> str:
     if isinstance(value, bool):
         return str(int(value))
     if isinstance(value, float):
-        return "" if math.isnan(value) else repr(value)
+        # 12 significant digits drop float noise from the unit scaling
+        # and keep the full crystal frequency resolution.
+        # (+ 0.0 turns -0.0 into 0.0.)
+        return "" if math.isnan(value) else f"{value * scale + 0.0:.12g}"
     return str(value)
 
 
@@ -93,7 +99,10 @@ class CsvLogger:
                 f"{sample.elapsed:.3f}",
             ]
             for cell in sample.cells:
-                row += [_format(getattr(cell, attr)) for _, attr in CELL_FIELDS]
+                row += [
+                    _format(getattr(cell, attr), DISPLAY_SCALE.get(attr, 1.0))
+                    for _, attr in CELL_FIELDS
+                ]
 
             self._writer.writerow(row)
             self._file.flush()

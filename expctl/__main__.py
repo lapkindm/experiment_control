@@ -20,6 +20,7 @@ from .acquisition import Acquisition
 from .config import Config, load_config
 from .datalog import CsvLogger
 from .samples import Sample
+from .units import RATE_TO_DISPLAY, THICKNESS_TO_DISPLAY
 
 
 def build_devices(config: Config):
@@ -60,15 +61,15 @@ def setup_logging(directory: Path) -> None:
 
 def _status_line(config: Config, sample: Sample) -> str:
     def f(value, fmt):
-        return "---" if not math.isfinite(value) else format(value, fmt)
+        return "---" if not math.isfinite(value) else format(value + 0.0, fmt)
 
     parts = []
     for cell, values in zip(config.cells, sample.cells):
         parts.append(
             f"{cell.name}: T={f(values.temperature, '.1f')} °C "
             f"SP={f(values.target_setpoint, '.1f')} °C "
-            f"rate={f(values.rate * 60, '.2f')} Å/min "
-            f"d={f(values.thickness * 1000, '.0f')} Å"
+            f"rate={f(values.rate * RATE_TO_DISPLAY, '.2f')} Å/min "
+            f"d={f(values.thickness * THICKNESS_TO_DISPLAY, '.0f')} Å"
         )
     return " | ".join(parts)
 
