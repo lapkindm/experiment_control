@@ -12,7 +12,7 @@ import time
 import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import QObject, Qt, pyqtSignal
-from PyQt6.QtGui import QAction, QFont
+from PyQt6.QtGui import QAction, QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
@@ -324,6 +324,10 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(title)
         self.resize(1300, 1000)
 
+        # Room for a frame around the window (see paintEvent), so its edge
+        # is visible even without window manager decorations.
+        self.setContentsMargins(1, 1, 1, 1)
+
         self._build_toolbar()
 
         # Cell panels
@@ -594,6 +598,13 @@ class MainWindow(QMainWindow):
             plot.enableAutoRange(y=True)
 
     # ------------------------------------------------------------------
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setPen(QPen(QColor("#8a8a8a"), 1))
+        painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
+        painter.end()
 
     def closeEvent(self, event) -> None:
         answer = QMessageBox.question(
