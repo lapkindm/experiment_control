@@ -1,0 +1,59 @@
+# Experiment control configuration.
+# Copy to config.toml and adapt ports / limits to your chamber.
+
+[acquisition]
+interval = 1.0            # s between readings of all devices
+reconnect_delay = 5.0     # s between reconnection attempts after an error
+
+[logging]
+directory = "logs"        # relative to this file
+autostart = true          # start a CSV file on program start
+
+[qcm]
+transport = "usb"         # "usb" or "serial"
+# port = "/dev/ttyUSB2"   # required for transport = "serial"
+# baudrate = 19200
+# vid = 0x10C4            # optional explicit USB IDs
+# pid = 0x83F5
+
+[simulation]
+enabled = false           # or start with --simulate
+speed = 1.0               # simulated seconds per real second
+
+# ---------------------------------------------------------------------
+# One [[cells]] block per effusion cell.
+
+[[cells]]
+name = "Cell A"
+key = "A"                 # prefix of the CSV columns
+sensor = 1                # SQM-160 sensor channel
+model = "2408"            # Eurotherm model: "2408" or "3508"
+port = "/dev/ttyUSB0"
+address = 1               # Modbus address
+# baudrate = 9600         # default: 9600 (2408), 19200 (3508)
+min_setpoint = 20.0       # °C, every setpoint write is clamped to this range,
+max_setpoint = 1000.0     # °C  including writes by the rate feedback
+
+[cells.feedback]
+kp = 25.0                 # °C per unit ln(target/rate): 10 % low rate -> +2.5 °C
+ki = 0.4                  # °C/s per unit ln(target/rate)
+filter_tau = 5.0          # s, low-pass on the measured rate
+max_slew = 10.0           # °C/min, maximum setpoint change by the feedback
+rate_floor = 0.02         # rates below this fraction of the target are clipped
+
+[[cells]]
+name = "Cell B"
+key = "B"
+sensor = 2
+model = "3508"
+port = "/dev/ttyUSB1"
+address = 1
+min_setpoint = 20.0
+max_setpoint = 800.0
+
+[cells.feedback]
+kp = 25.0
+ki = 0.4
+filter_tau = 5.0
+max_slew = 10.0
+rate_floor = 0.02

@@ -1,0 +1,464 @@
+"""
+PyQt6 / pyqtgraph user interface.
+"""
+
+from __future__ import annotations
+
+import html
+import logging
+import math
+import time
+
+import numpy as np
+import pyqtgraph as pg
+from PyQt6.QtCore import QObject, Qt, pyqtSignal
+from PyQt6.QtGui import QAction, QFont
+from PyQt6.QtWidgets import (
+    QComboBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QSizePolicy,
+    QSplitter,
+    QToolBar,
+    QVBoxLayout,
+    QWidget,
+)
+
+from .acquisition import Acquisition
+from .config import CellConfig, Config
+from .datalog import CsvLogger
+from .samples import CellSample, Sample
+
+COLORS = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e", "#8c564b"]
+
+WINDOWS = [
+    ("5 min", 300),
+    ("30 min", 1800),
+    ("2 h", 7200),
+    ("12 h", 43200),
+    ("All", None),
+]
+
+
+class Bridge(QObject):
+    """
+    Carries data from the acquisition thread to the GUI thread.
+    """
+
+    sample = pyqtSignal(object)
+    message = pyqtSignal(str, int)
+
+
+class QtLogHandler(logging.Handler):
+    def __init__(self, bridge: Bridge) -> None:
+        super().__init__()
+        self.bridge = bridge
+        self.setFormatter(
+            logging.Formatter("%(asctime)s  %(message)s", "%H:%M:%S")
+        )
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.bridge.message.emit(self.format(record), record.levelno)
+
+
+# ----------------------------------------------------------------------
+# History buffer
+# ----------------------------------------------------------------------
+
+class History:
+    """
+    Growable column store of the samples received so far.
+    """
+
+    FIELDS = ["temperature", "working_setpoint", "rate", "rate_target"]
+
+    def __init__(self, n_cells: int) -> None:
+        self.n_cells = n_cells
+        self.size = 0
+        self._capacity = 4096
+        self.time = np.empty(self._capacity)
+        self.data = {
+            (i, f): np.empty(self._capacity)
+            for i in range(n_cells)
+            for f in self.FIELDS
+        }
+
+    def append(self, sample: Sample) -> None:
+        if self.size == self._capacity:
+            self._capacity *= 2
+            self.time = np.resize(self.time, self._capacity)
+            for key, array in self.data.items():
+                self.data[key] = np.resize(array, self._capacity)
+
+        self.time[self.size] = sample.timestamp
+        for i, cell in enumerate(sample.cells):
+            for f in self.FIELDS:
+                self.data[(i, f)][self.size] = getattr(cell, f)
+        self.size += 1
+
+    def view(self, since: float | None):
+        """
+        Return (time, data) for samples newer than ``since``.
+        """
+
+        start = 0
+        if since is not None:
+            start = int(np.searchsorted(self.time[: self.size], since))
+
+        sl = slice(start, self.size)
+        return self.time[sl], {k: v[sl] for k, v in self.data.items()}
+
+
+# ----------------------------------------------------------------------
+# Per-cell panel
+# ----------------------------------------------------------------------
+
+def _fmt(value: float, fmt: str, unit: str) -> str:
+    return "—" if not math.isfinite(value) else f"{value:{fmt}} {unit}"
+
+
+class CellPanel(QGroupBox):
+    setpoint_requested = pyqtSignal(float)
+    feedback_requested = pyqtSignal(bool, float)
+
+    def __init__(self, cell: CellConfig, color: str) -> None:
+        super().__init__(cell.name)
+        self.setStyleSheet(
+            f"QGroupBox {{ font-weight: bold; border: 2px solid {color};"
+            " border-radius: 4px; margin-top: 1.2em; padding: 6px; }"
+            " QGroupBox::title { subcontrol-origin: margin; left: 8px; }"
+        )
+
+        big = QFont()
+        big.setPointSize(16)
+        big.setBold(True)
+
+        self.temperature = QLabel("—")
+        self.temperature.setFont(big)
+        self.rate = QLabel("—")
+        self.rate.setFont(big)
+        self.setpoint = QLabel("—")
+        self.output = QLabel("—")
+        self.thickness = QLabel("—")
+        self.frequency = QLabel("—")
+
+        values = QGridLayout()
+        values.addWidget(QLabel("Temperature"), 0, 0)
+        values.addWidget(self.temperature, 1, 0)
+        values.addWidget(QLabel("Rate"), 0, 1)
+        values.addWidget(self.rate, 1, 1)
+
+        details = QFormLayout()
+        details.addRow("Setpoint (target / working):", self.setpoint)
+        details.addRow("Output:", self.output)
+        details.addRow("Thickness:", self.thickness)
+        details.addRow("Crystal frequency:", self.frequency)
+
+        # Setpoint control
+        self.setpoint_input = QDoubleSpinBox()
+        self.setpoint_input.setRange(cell.min_setpoint, cell.max_setpoint)
+        self.setpoint_input.setDecimals(1)
+        self.setpoint_input.setSuffix(" °C")
+        self.setpoint_input.setKeyboardTracking(False)
+        set_button = QPushButton("Set")
+        set_button.clicked.connect(
+            lambda: self.setpoint_requested.emit(self.setpoint_input.value())
+        )
+
+        # Rate feedback control
+        self.rate_input = QDoubleSpinBox()
+        self.rate_input.setRange(0.001, 1000.0)
+        self.rate_input.setDecimals(3)
+        self.rate_input.setValue(1.0)
+        self.rate_input.setSuffix(" Å/s")
+        self.rate_input.setKeyboardTracking(False)
+        self.rate_input.valueChanged.connect(self._rate_target_changed)
+
+        self.feedback_button = QPushButton("Rate feedback: OFF")
+        self.feedback_button.setCheckable(True)
+        self.feedback_button.clicked.connect(self._feedback_clicked)
+
+        controls = QGridLayout()
+        controls.addWidget(QLabel("Temperature setpoint"), 0, 0)
+        controls.addWidget(self.setpoint_input, 0, 1)
+        controls.addWidget(set_button, 0, 2)
+        controls.addWidget(QLabel("Target rate"), 1, 0)
+        controls.addWidget(self.rate_input, 1, 1)
+        controls.addWidget(self.feedback_button, 1, 2)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(values)
+        layout.addLayout(details)
+        layout.addLayout(controls)
+
+    def _feedback_clicked(self, checked: bool) -> None:
+        self.feedback_requested.emit(checked, self.rate_input.value())
+
+    def _rate_target_changed(self, value: float) -> None:
+        if self.feedback_button.isChecked():
+            self.feedback_requested.emit(True, value)
+
+    def update_values(self, cell: CellSample) -> None:
+        self.temperature.setText(_fmt(cell.temperature, ".1f", "°C"))
+        self.rate.setText(_fmt(cell.rate, ".2f", "Å/s"))
+        self.setpoint.setText(
+            f"{_fmt(cell.target_setpoint, '.1f', '°C')} / "
+            f"{_fmt(cell.working_setpoint, '.1f', '°C')}"
+        )
+        self.output.setText(_fmt(cell.output, ".1f", "%"))
+        self.thickness.setText(_fmt(cell.thickness, ".3f", "kÅ"))
+        self.frequency.setText(_fmt(cell.frequency, ",.1f", "Hz"))
+
+        # Show the controller's setpoint unless the user is editing it.
+        if (
+            math.isfinite(cell.target_setpoint)
+            and not self.setpoint_input.hasFocus()
+        ):
+            self.setpoint_input.setValue(cell.target_setpoint)
+
+        # Feedback can be switched off by the acquisition thread
+        # (e.g. communication error); keep the button in sync.
+        self.feedback_button.blockSignals(True)
+        self.feedback_button.setChecked(cell.feedback)
+        self.feedback_button.blockSignals(False)
+        self.feedback_button.setText(
+            f"Rate feedback: {'ON' if cell.feedback else 'OFF'}"
+        )
+        self.feedback_button.setStyleSheet(
+            "background-color: #2e7d32; color: white;" if cell.feedback else ""
+        )
+
+
+# ----------------------------------------------------------------------
+# Main window
+# ----------------------------------------------------------------------
+
+class MainWindow(QMainWindow):
+    def __init__(
+        self,
+        config: Config,
+        acquisition: Acquisition,
+        data_logger: CsvLogger,
+        bridge: Bridge,
+        title: str = "Deposition control",
+    ) -> None:
+        super().__init__()
+        self.config = config
+        self.acquisition = acquisition
+        self.data_logger = data_logger
+        self.history = History(len(config.cells))
+        self.window_seconds: float | None = WINDOWS[0][1]
+
+        self.setWindowTitle(title)
+        self.resize(1300, 900)
+
+        self._build_toolbar()
+
+        # Cell panels
+        self.panels = []
+        panels = QHBoxLayout()
+        for i, cell in enumerate(config.cells):
+            panel = CellPanel(cell, COLORS[i % len(COLORS)])
+            panel.setpoint_requested.connect(
+                lambda v, i=i: self.acquisition.set_setpoint(i, v)
+            )
+            panel.feedback_requested.connect(
+                lambda on, rate, i=i: self._feedback_requested(i, on, rate)
+            )
+            panels.addWidget(panel)
+            self.panels.append(panel)
+
+        # Plots
+        pg.setConfigOptions(antialias=True)
+        plots = pg.GraphicsLayoutWidget()
+        plots.setBackground("w")
+
+        self.temperature_plot = plots.addPlot(
+            row=0, col=0, axisItems={"bottom": pg.DateAxisItem()}
+        )
+        self.rate_plot = plots.addPlot(
+            row=1, col=0, axisItems={"bottom": pg.DateAxisItem()}
+        )
+        self.rate_plot.setXLink(self.temperature_plot)
+
+        self.temperature_plot.setLabel("left", "Temperature", units="°C")
+        self.rate_plot.setLabel("left", "Rate (Å/s)")
+
+        self.curves = {}
+        for plot, fields in [
+            (self.temperature_plot, ("temperature", "working_setpoint")),
+            (self.rate_plot, ("rate", "rate_target")),
+        ]:
+            plot.showGrid(x=True, y=True, alpha=0.3)
+            plot.setClipToView(True)
+            plot.setDownsampling(auto=True, mode="peak")
+            plot.getViewBox().setAutoVisible(y=True)
+            legend = plot.addLegend(offset=(10, 10))
+            legend.setLabelTextColor("k")
+
+            for i, cell in enumerate(config.cells):
+                color = COLORS[i % len(COLORS)]
+                solid, dashed = fields
+                self.curves[(i, solid)] = plot.plot(
+                    pen=pg.mkPen(color, width=2), name=cell.name
+                )
+                self.curves[(i, dashed)] = plot.plot(
+                    pen=pg.mkPen(color, width=1, style=Qt.PenStyle.DashLine),
+                    name=f"{cell.name} {'setpoint' if plot is self.temperature_plot else 'target'}",
+                )
+
+        # Event log
+        self.events = QPlainTextEdit()
+        self.events.setReadOnly(True)
+        self.events.setMaximumBlockCount(2000)
+
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.addWidget(plots)
+        splitter.addWidget(self.events)
+        splitter.setStretchFactor(0, 5)
+        splitter.setStretchFactor(1, 1)
+
+        central = QWidget()
+        layout = QVBoxLayout(central)
+        layout.addLayout(panels)
+        layout.addWidget(splitter, stretch=1)
+        self.setCentralWidget(central)
+
+        bridge.sample.connect(self.on_sample)
+        bridge.message.connect(self.on_message)
+
+        self._update_logging_state()
+
+        # Keep the initial focus away from the setpoint boxes, which do
+        # not follow the controller while focused.
+        self.events.setFocus()
+
+    # ------------------------------------------------------------------
+
+    def _build_toolbar(self) -> None:
+        toolbar = QToolBar("Main")
+        toolbar.setMovable(False)
+        self.addToolBar(toolbar)
+
+        self.logging_action = QAction("Start logging", self)
+        self.logging_action.setCheckable(True)
+        self.logging_action.triggered.connect(self._toggle_logging)
+        toolbar.addAction(self.logging_action)
+
+        self.log_label = QLabel()
+        self.log_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        toolbar.addWidget(self.log_label)
+
+        spacer = QWidget()
+        spacer.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
+        toolbar.addWidget(spacer)
+
+        toolbar.addWidget(QLabel("Plot window: "))
+        self.window_box = QComboBox()
+        for label, _ in WINDOWS:
+            self.window_box.addItem(label)
+        self.window_box.currentIndexChanged.connect(self._window_changed)
+        toolbar.addWidget(self.window_box)
+
+    def _toggle_logging(self, checked: bool) -> None:
+        if checked:
+            path = self.data_logger.start()
+            logging.getLogger(__name__).info("Logging to %s", path)
+        else:
+            self.data_logger.stop()
+            logging.getLogger(__name__).info("Logging stopped.")
+        self._update_logging_state()
+
+    def _update_logging_state(self) -> None:
+        active = self.data_logger.active
+        self.logging_action.setChecked(active)
+        self.logging_action.setText("Stop logging" if active else "Start logging")
+        self.log_label.setText(
+            f"  Logging to {self.data_logger.path.name}" if active
+            else "  Not logging"
+        )
+        self.log_label.setToolTip(
+            str(self.data_logger.path) if active else ""
+        )
+        self.log_label.setStyleSheet(
+            "color: #2e7d32; font-weight: bold;" if active else "color: #b71c1c;"
+        )
+
+    def _window_changed(self, index: int) -> None:
+        self.window_seconds = WINDOWS[index][1]
+        self._redraw()
+
+    def _feedback_requested(self, index: int, on: bool, rate: float) -> None:
+        if on:
+            self.acquisition.enable_feedback(index, rate)
+        else:
+            self.acquisition.disable_feedback(index)
+
+    # ------------------------------------------------------------------
+
+    def on_sample(self, sample: Sample) -> None:
+        self.history.append(sample)
+        for panel, cell in zip(self.panels, sample.cells):
+            panel.update_values(cell)
+        self._redraw()
+
+    def on_message(self, text: str, level: int) -> None:
+        self.statusBar().showMessage(text, 10000)
+
+        escaped = html.escape(text)
+        if level >= logging.ERROR:
+            escaped = f'<span style="color:#b71c1c">{escaped}</span>'
+        elif level >= logging.WARNING:
+            escaped = f'<span style="color:#e65100">{escaped}</span>'
+        self.events.appendHtml(escaped)
+
+    def _redraw(self) -> None:
+        if self.history.size == 0:
+            return
+
+        since = None
+        if self.window_seconds is not None:
+            since = time.time() - self.window_seconds
+
+        t, data = self.history.view(since)
+        for key, curve in self.curves.items():
+            curve.setData(t, data[key], connect="finite")
+
+        if self.window_seconds is None:
+            self.temperature_plot.enableAutoRange(x=True)
+        else:
+            now = time.time()
+            self.temperature_plot.setXRange(
+                now - self.window_seconds, now, padding=0
+            )
+        for plot in (self.temperature_plot, self.rate_plot):
+            plot.enableAutoRange(y=True)
+
+    # ------------------------------------------------------------------
+
+    def closeEvent(self, event) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Quit",
+            "Stop acquisition and quit?\n\n"
+            "The Eurotherm controllers keep their current setpoints.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            event.ignore()
+            return
+
+        self.acquisition.stop()
+        self.data_logger.stop()
+        event.accept()

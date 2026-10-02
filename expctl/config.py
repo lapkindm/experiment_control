@@ -1,0 +1,144 @@
+"""
+Configuration loading.
+
+The configuration is a TOML file, see ``config.example.toml``.
+"""
+
+from __future__ import annotations
+
+import re
+import tomllib
+from dataclasses import dataclass, field
+from pathlib import Path
+
+
+@dataclass
+class FeedbackConfig:
+    """
+    Parameters of the rate -> temperature setpoint feedback loop.
+
+    The loop works on the logarithmic rate error ln(target / rate), because
+    the evaporation rate depends roughly exponentially on temperature. A
+    gain of ``kp = 25`` therefore means: a 10 % rate deficit raises the
+    setpoint by about 2.5 °C.
+    """
+
+    kp: float = 25.0             # °C per unit of ln(target / rate)
+    ki: float = 0.4              # °C per second per unit of ln(target / rate)
+    filter_tau: float = 5.0      # s, low-pass filter on the measured rate
+    max_slew: float = 10.0       # °C per minute, limit on setpoint changes
+    rate_floor: float = 0.02     # fraction of target used as minimum rate
+
+
+@dataclass
+class CellConfig:
+    """
+    One effusion cell: an Eurotherm controller and a QCM sensor channel.
+    """
+
+    name: str
+    key: str                     # short identifier used for CSV columns
+    sensor: int                  # SQM-160 sensor number (1-6)
+    model: str                   # Eurotherm model: "2408" or "3508"
+    port: str
+    address: int = 1
+    baudrate: int | None = None  # None: driver default for the model
+    timeout: float = 1.0
+    min_setpoint: float = 0.0
+    max_setpoint: float = 1000.0
+    feedback: FeedbackConfig = field(default_factory=FeedbackConfig)
+
+
+@dataclass
+class QCMConfig:
+    transport: str = "usb"       # "usb" or "serial"
+    port: str | None = None      # serial port, for transport = "serial"
+    baudrate: int = 19200
+    vid: int | None = None
+    pid: int | None = None
+    timeout: float = 3.0         # s
+
+
+@dataclass
+class SimulationConfig:
+    enabled: bool = False
+    speed: float = 1.0           # simulated seconds per real second
+
+
+@dataclass
+class Config:
+    interval: float = 1.0        # s between acquisitions
+    reconnect_delay: float = 5.0 # s between reconnection attempts
+    log_directory: Path = Path("logs")
+    log_autostart: bool = True
+    qcm: QCMConfig = field(default_factory=QCMConfig)
+    cells: list[CellConfig] = field(default_factory=list)
+    simulation: SimulationConfig = field(default_factory=SimulationConfig)
+
+
+def _make_key(name: str) -> str:
+    return re.sub(r"\W+", "_", name).strip("_") or "cell"
+
+
+def _build(cls, data: dict, section: str):
+    known = set(cls.__dataclass_fields__)
+    unknown = set(data) - known
+    if unknown:
+        raise ValueError(
+            f"Unknown option(s) in [{section}]: {', '.join(sorted(unknown))}"
+        )
+    return cls(**data)
+
+
+def load_config(path: str | Path) -> Config:
+    """
+    Load the configuration from a TOML file.
+    """
+
+    path = Path(path)
+
+    with path.open("rb") as f:
+        data = tomllib.load(f)
+
+    acquisition = data.get("acquisition", {})
+    logging_ = data.get("logging", {})
+
+    cells = []
+    for raw in data.get("cells", []):
+        raw = dict(raw)
+        feedback = _build(
+            FeedbackConfig, raw.pop("feedback", {}), "cells.feedback"
+        )
+        raw.setdefault("key", _make_key(raw.get("name", "")))
+        cells.append(
+            _build(CellConfig, {**raw, "feedback": feedback}, "cells")
+        )
+
+    if not cells:
+        raise ValueError("The configuration defines no [[cells]].")
+
+    keys = [cell.key for cell in cells]
+    if len(set(keys)) != len(keys):
+        raise ValueError(f"Cell keys must be unique, got {keys}.")
+
+    for cell in cells:
+        if cell.min_setpoint >= cell.max_setpoint:
+            raise ValueError(
+                f"{cell.name}: min_setpoint must be below max_setpoint."
+            )
+
+    log_directory = Path(logging_.get("directory", "logs"))
+    if not log_directory.is_absolute():
+        log_directory = path.parent / log_directory
+
+    return Config(
+        interval=acquisition.get("interval", 1.0),
+        reconnect_delay=acquisition.get("reconnect_delay", 5.0),
+        log_directory=log_directory,
+        log_autostart=logging_.get("autostart", True),
+        qcm=_build(QCMConfig, data.get("qcm", {}), "qcm"),
+        cells=cells,
+        simulation=_build(
+            SimulationConfig, data.get("simulation", {}), "simulation"
+        ),
+    )

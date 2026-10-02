@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "expctl"
+version = "0.1.0"
+description = "Effusion cell temperature and QCM deposition rate logging and control"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    {name = "Dmitry Lapkin"}
+]
+dependencies = [
+    "numpy",
+    "PyQt6",
+    "pyqtgraph>=0.13",
+    "pyserial>=3.5",
+    "sqm160 @ git+https://github.com/lapkindm/sqm160",
+    "eurotherm @ git+https://github.com/lapkindm/eurotherm2000",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+expctl = "expctl.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["expctl*"]
