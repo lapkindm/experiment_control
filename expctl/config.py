@@ -68,18 +68,21 @@ class QCMConfig:
     baudrate: int = 19200
     vid: int | None = None
     pid: int | None = None
-    timeout: float = 3.0         # s
+    timeout: float = 1.0         # s
 
 
 @dataclass
 class SimulationConfig:
     enabled: bool = False
     speed: float = 1.0           # simulated seconds per real second
+    failure_rate: float = 0.0    # probability that a request gets no answer
 
 
 @dataclass
 class Config:
     interval: float = 1.0        # s between acquisitions
+    retries: int = 2             # extra attempts for a failed request
+    max_missed: int = 5          # consecutive missed requests -> reconnect
     reconnect_delay: float = 5.0 # s between reconnection attempts
     log_directory: Path = Path("logs")
     log_autostart: bool = True
@@ -134,6 +137,9 @@ def load_config(path: str | Path) -> Config:
     if len(set(keys)) != len(keys):
         raise ValueError(f"Cell keys must be unique, got {keys}.")
 
+    if acquisition.get("retries", 2) < 0 or acquisition.get("max_missed", 5) < 1:
+        raise ValueError("[acquisition] needs retries >= 0 and max_missed >= 1.")
+
     for cell in cells:
         if cell.min_setpoint >= cell.max_setpoint:
             raise ValueError(
@@ -146,6 +152,8 @@ def load_config(path: str | Path) -> Config:
 
     return Config(
         interval=acquisition.get("interval", 1.0),
+        retries=acquisition.get("retries", 2),
+        max_missed=acquisition.get("max_missed", 5),
         reconnect_delay=acquisition.get("reconnect_delay", 5.0),
         log_directory=log_directory,
         log_autostart=logging_.get("autostart", True),

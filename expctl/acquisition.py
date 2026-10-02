@@ -37,35 +37,87 @@ _STOP = object()
 class _Link:
     """
     Connection state of one device.
+
+    Instruments occasionally do not answer a request. A failed request is
+    retried ``retries`` times; if all attempts fail, the request is
+    reported as missed (None) but the device stays open. Only after
+    ``max_missed`` consecutive missed requests is the device closed and
+    reopened, every ``reconnect_delay`` seconds.
     """
 
-    def __init__(self, device, reconnect_delay: float) -> None:
+    STATS_INTERVAL = 600.0      # s between retry/miss summaries in the log
+
+    def __init__(
+        self,
+        device,
+        reconnect_delay: float,
+        retries: int,
+        max_missed: int,
+        on_disconnect: Callable[[], None] | None = None,
+    ) -> None:
         self.device = device
         self.reconnect_delay = reconnect_delay
+        self.retries = retries
+        self.max_missed = max_missed
+        self.on_disconnect = on_disconnect
+
         self.connected = False
+        self.missed = 0                 # consecutive missed requests
         self._next_attempt = 0.0
+
+        self._requests = 0
+        self._retried = 0
+        self._missed_total = 0
+        self._stats_since = time.monotonic()
 
     def call(self, fn: Callable):
         """
-        Run ``fn(device)``; return None if the device is unavailable.
+        Run ``fn(device)``; return None if the device is unavailable or
+        did not respond.
         """
 
-        if not self.connected:
-            if time.monotonic() < self._next_attempt:
-                return None
-            try:
-                self.device.open()
-            except Exception as exc:
-                self._fail(f"cannot connect: {exc}")
-                return None
-            self.connected = True
-            log.info("%s connected.", self.device.name)
-
-        try:
-            return fn(self.device)
-        except Exception as exc:
-            self._fail(f"communication error: {exc}")
+        if not self.connected and not self._connect():
             return None
+
+        self._requests += 1
+        self._log_stats()
+
+        error = None
+        for attempt in range(1 + self.retries):
+            try:
+                result = fn(self.device)
+            except Exception as exc:
+                error = exc
+                log.debug(
+                    "%s: attempt %d failed: %r", self.device.name, attempt + 1, exc
+                )
+                continue
+
+            if attempt:
+                self._retried += 1
+            if self.missed:
+                if self.missed > 1:
+                    log.info(
+                        "%s responds again after %d missed requests.",
+                        self.device.name, self.missed,
+                    )
+                self.missed = 0
+            return result
+
+        self.missed += 1
+        self._missed_total += 1
+
+        if self.missed >= self.max_missed:
+            self._fail(
+                f"no valid response to {self.missed} consecutive requests "
+                f"({error!r}), reconnecting"
+            )
+        elif self.missed == 2:
+            log.warning(
+                "%s: no response (%r), value missing; retrying.",
+                self.device.name, error,
+            )
+        return None
 
     def close(self) -> None:
         if self.connected:
@@ -75,12 +127,47 @@ class _Link:
                 log.exception("Error while closing %s.", self.device.name)
         self.connected = False
 
+    def _connect(self) -> bool:
+        if time.monotonic() < self._next_attempt:
+            return False
+        try:
+            self.device.open()
+        except Exception as exc:
+            self._fail(f"cannot connect: {exc}")
+            return False
+        self.connected = True
+        self.missed = 0
+        log.info("%s connected.", self.device.name)
+        return True
+
     def _fail(self, message: str) -> None:
-        # Only report the first failure, not every reconnection attempt.
-        if self.connected or self._next_attempt == 0.0:
+        was_connected = self.connected
+
+        # Report the first failure, not every reconnection attempt.
+        if was_connected or self._next_attempt == 0.0:
             log.error("%s: %s", self.device.name, message)
+
         self.close()
+        self.missed = 0
         self._next_attempt = time.monotonic() + self.reconnect_delay
+
+        if was_connected and self.on_disconnect is not None:
+            self.on_disconnect()
+
+    def _log_stats(self) -> None:
+        now = time.monotonic()
+        if now - self._stats_since < self.STATS_INTERVAL:
+            return
+
+        if self._retried or self._missed_total:
+            log.info(
+                "%s: %d requests in the last %.0f min, %d needed a retry, "
+                "%d missed.",
+                self.device.name, self._requests,
+                (now - self._stats_since) / 60, self._retried, self._missed_total,
+            )
+        self._requests = self._retried = self._missed_total = 0
+        self._stats_since = now
 
 
 class Acquisition:
@@ -115,8 +202,20 @@ class Acquisition:
         self.data_logger = data_logger
         self.time_scale = time_scale
 
-        self._heaters = [_Link(h, config.reconnect_delay) for h in heaters]
-        self._qcm = _Link(qcm, config.reconnect_delay)
+        def link(device, on_disconnect=None):
+            return _Link(
+                device,
+                reconnect_delay=config.reconnect_delay,
+                retries=config.retries,
+                max_missed=config.max_missed,
+                on_disconnect=on_disconnect,
+            )
+
+        self._heaters = [
+            link(h, lambda i=i: self._heater_disconnected(i))
+            for i, h in enumerate(heaters)
+        ]
+        self._qcm = link(qcm)
 
         self._feedback = [
             RateFeedback(c.feedback, c.min_setpoint, c.max_setpoint)
@@ -125,6 +224,9 @@ class Acquisition:
         self._rate = [ThicknessRate(config.rate) for _ in config.cells]
         self._feedback_on = [False] * len(config.cells)
         self._written_setpoint = [math.nan] * len(config.cells)
+        # Setpoint waiting to be acknowledged by the controller, or NaN.
+        self._pending_setpoint = [math.nan] * len(config.cells)
+        self._t0 = 0.0
 
         self._listeners: list[Callable[[Sample], None]] = []
         self._commands: queue.Queue = queue.Queue()
@@ -177,7 +279,7 @@ class Acquisition:
 
     def _run(self) -> None:
         interval = self.config.interval / self.time_scale
-        t0 = time.monotonic()
+        t0 = self._t0 = time.monotonic()
         next_time = t0
         previous = None
 
@@ -186,11 +288,14 @@ class Acquisition:
         try:
             while True:
                 now = time.monotonic()
-                sample = self._acquire(now - t0, (now - t0) * self.time_scale)
+                sample = self._acquire(now - t0)
 
                 if previous is not None:
                     self._run_feedback(sample, (now - previous) * self.time_scale)
                 previous = now
+
+                for index in range(len(self.config.cells)):
+                    self._send_pending_setpoint(index)
 
                 sample = self._annotate(sample)
                 self._last = sample
@@ -244,17 +349,16 @@ class Acquisition:
             except Exception:
                 log.exception("Command %s%r failed.", fn.__name__, tuple(args))
 
-    def _acquire(self, elapsed: float, process_time: float) -> Sample:
-        """
-        ``process_time`` is ``elapsed`` in simulated time (equal to it on
-        the real hardware); the rate fit uses it.
-        """
-
+    def _acquire(self, elapsed: float) -> Sample:
         timestamp = time.time()
 
         qcm: dict[int, QCMChannel] = (
             self._qcm.call(lambda d: d.read()) or {}
         )
+
+        # Time of the thickness reading for the rate fit (after possible
+        # retries; in simulated time when simulating).
+        qcm_time = (time.monotonic() - self._t0) * self.time_scale
 
         cells = []
         for cell, link, rate in zip(
@@ -275,7 +379,7 @@ class Acquisition:
                     thickness=channel.thickness,
                     frequency=channel.frequency,
                 )
-            values["rate"] = rate.update(process_time, thickness)
+            values["rate"] = rate.update(qcm_time, thickness)
 
             cells.append(CellSample(**values))
 
@@ -294,7 +398,11 @@ class Acquisition:
     # Setpoints and feedback (acquisition thread only)
     # ------------------------------------------------------------------
 
-    def _write_setpoint(self, index: int, value: float) -> bool:
+    def _request_setpoint(self, index: int, value: float) -> float:
+        """
+        Clamp ``value`` to the cell limits and queue it for writing.
+        """
+
         cell = self.config.cells[index]
 
         clamped = max(cell.min_setpoint, min(cell.max_setpoint, value))
@@ -304,13 +412,42 @@ class Acquisition:
                 cell.name, value, cell.min_setpoint, cell.max_setpoint, clamped,
             )
 
-        clamped = round(clamped, 1)
-        link = self._heaters[index]
+        self._pending_setpoint[index] = round(clamped, 1)
+        return self._pending_setpoint[index]
 
-        ok = link.call(lambda d: d.set_setpoint(clamped) or True)
+    def _send_pending_setpoint(self, index: int) -> bool:
+        """
+        Write the pending setpoint. If the controller does not acknowledge
+        it, it stays pending and is retried on the next cycle.
+        """
+
+        value = self._pending_setpoint[index]
+        if math.isnan(value):
+            return True
+
+        ok = self._heaters[index].call(lambda d: d.set_setpoint(value) or True)
         if ok:
-            self._written_setpoint[index] = clamped
+            self._written_setpoint[index] = value
+            self._pending_setpoint[index] = math.nan
         return bool(ok)
+
+    def _heater_disconnected(self, index: int) -> None:
+        cell = self.config.cells[index]
+
+        if self._feedback_on[index]:
+            self._feedback_on[index] = False
+            log.error("%s: rate feedback OFF, controller disconnected.", cell.name)
+
+        value = self._pending_setpoint[index]
+        if not math.isnan(value):
+            self._pending_setpoint[index] = math.nan
+            log.error(
+                "%s: setpoint %.1f °C was not written (controller "
+                "disconnected). Set it again after reconnection.",
+                cell.name, value,
+            )
+
+        self._written_setpoint[index] = math.nan
 
     def _do_set_setpoint(self, index: int, value: float) -> None:
         cell = self.config.cells[index]
@@ -318,8 +455,14 @@ class Acquisition:
         if self._feedback_on[index]:
             self._do_disable_feedback(index)
 
-        if self._write_setpoint(index, value):
+        value = self._request_setpoint(index, value)
+        if self._send_pending_setpoint(index):
             log.info("%s: setpoint set to %.1f °C.", cell.name, value)
+        elif self._heaters[index].connected:
+            log.warning(
+                "%s: setpoint %.1f °C not acknowledged yet, retrying.",
+                cell.name, value,
+            )
 
     def _do_enable_feedback(self, index: int, target: float) -> None:
         cell = self.config.cells[index]
@@ -351,6 +494,7 @@ class Acquisition:
         fb.start(target, setpoint)
         self._feedback_on[index] = True
         self._written_setpoint[index] = setpoint
+        self._pending_setpoint[index] = math.nan
         log.info(
             "%s: rate feedback ON, target %.3g Å/min, starting from %.1f °C.",
             cell.name, target * RATE_TO_DISPLAY, setpoint,
@@ -366,19 +510,18 @@ class Acquisition:
             if not on:
                 continue
 
-            cell = self.config.cells[index]
-            setpoint = self._feedback[index].update(sample.cells[index].rate, dt)
+            # Hold while the controller does not answer: the setpoint
+            # could not be applied anyway.
+            if math.isnan(sample.cells[index].temperature):
+                continue
 
+            setpoint = self._feedback[index].update(sample.cells[index].rate, dt)
             if setpoint is None:
                 continue
 
             # The controller stores 0.1 °C; avoid redundant writes.
             if abs(round(setpoint, 1) - self._written_setpoint[index]) < 0.05:
+                self._pending_setpoint[index] = math.nan
                 continue
 
-            if not self._write_setpoint(index, setpoint):
-                self._feedback_on[index] = False
-                log.error(
-                    "%s: rate feedback OFF, setpoint could not be written.",
-                    cell.name,
-                )
+            self._request_setpoint(index, setpoint)

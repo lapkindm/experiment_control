@@ -58,6 +58,10 @@ def setup_logging(directory: Path) -> None:
     )
     root.addHandler(events)
 
+    # The eurotherm driver logs every communication error with a traceback
+    # before raising it; expctl reports these itself.
+    logging.getLogger("eurotherm").setLevel(logging.CRITICAL)
+
 
 def _status_line(config: Config, sample: Sample) -> str:
     def f(value, fmt):
@@ -131,16 +135,23 @@ def main(argv: list[str] | None = None) -> int:
         help="simulation speed factor (implies --simulate)",
     )
     parser.add_argument(
+        "--failure-rate", type=float,
+        help="simulation: probability that a request gets no answer "
+             "(implies --simulate)",
+    )
+    parser.add_argument(
         "--no-gui", action="store_true",
         help="run without the GUI, print status lines to stdout",
     )
     args = parser.parse_args(argv)
 
     config = load_config(args.config)
-    if args.simulate or args.speed is not None:
+    if args.simulate or args.speed is not None or args.failure_rate is not None:
         config.simulation.enabled = True
     if args.speed is not None:
         config.simulation.speed = args.speed
+    if args.failure_rate is not None:
+        config.simulation.failure_rate = args.failure_rate
 
     setup_logging(config.log_directory)
 

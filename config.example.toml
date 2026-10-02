@@ -3,7 +3,10 @@
 
 [acquisition]
 interval = 1.0            # s between readings of all devices
-reconnect_delay = 5.0     # s between reconnection attempts after an error
+retries = 2               # extra attempts when a device does not answer
+max_missed = 5            # consecutive unanswered requests before the
+                          # device is closed and reopened
+reconnect_delay = 5.0     # s between reconnection attempts
 
 [logging]
 directory = "logs"        # relative to this file
@@ -13,6 +16,7 @@ autostart = true          # start a CSV file on program start
 transport = "usb"         # "usb" or "serial"
 # port = "/dev/ttyUSB2"   # required for transport = "serial"
 # baudrate = 19200
+# timeout = 1.0           # s per request
 # vid = 0x10C4            # optional explicit USB IDs
 # pid = 0x83F5
 
@@ -26,6 +30,7 @@ reset_threshold = 0.005   # kÅ; a larger thickness drop restarts the fit
 [simulation]
 enabled = false           # or start with --simulate
 speed = 1.0               # simulated seconds per real second
+failure_rate = 0.0        # probability that a simulated request is not answered
 
 # ---------------------------------------------------------------------
 # One [[cells]] block per effusion cell.
@@ -38,6 +43,7 @@ model = "2408"            # Eurotherm model: "2408" or "3508"
 port = "/dev/ttyUSB0"
 address = 1               # Modbus address
 # baudrate = 9600         # default: 9600 (2408), 19200 (3508)
+# timeout = 1.0           # s per Modbus request
 min_setpoint = 20.0       # °C, every setpoint write is clamped to this range,
 max_setpoint = 1000.0     # °C  including writes by the rate feedback
 

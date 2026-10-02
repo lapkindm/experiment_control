@@ -158,3 +158,111 @@ def test_device_failure_and_recovery(tmp_path):
         assert flaky.opens == 2
     finally:
         acq.stop()
+
+
+class CountingHeater(FlakyHeater):
+    """
+    Fails the next ``fail_reads`` reads / ``fail_writes`` setpoint writes.
+    """
+
+    def __init__(self, heater):
+        super().__init__(heater)
+        self.fail_reads = 0
+        self.fail_writes = 0
+        self.writes = []
+
+    def read(self):
+        if self.fail_reads > 0:
+            self.fail_reads -= 1
+            raise TimeoutError("no response")
+        return self.heater.read()
+
+    def set_setpoint(self, value):
+        if self.fail_writes > 0:
+            self.fail_writes -= 1
+            raise TimeoutError("no response")
+        self.writes.append(value)
+        self.heater.set_setpoint(value)
+
+
+def test_single_miss_keeps_device_open(tmp_path):
+    config = make_config(tmp_path)
+    chamber = SimulatedChamber(config.cells, config.simulation, seed=0)
+    heater = CountingHeater(chamber.heaters[0])
+    acq = Acquisition(config, [heater, chamber.heaters[1]], chamber.qcm)
+    collect = Collector()
+    acq.add_listener(collect)
+
+    acq.start()
+    try:
+        collect.wait_for(lambda s: len(s) >= 2)
+
+        # Two failures: recovered by the retries, no value lost.
+        heater.fail_reads = 2
+        collect.wait_for(lambda s: heater.fail_reads == 0 and len(s) >= 5)
+
+        # One request with all three attempts failing: one value missing.
+        heater.fail_reads = 3
+        n = len(collect.samples)
+        collect.wait_for(lambda s: len(s) >= n + 5)
+    finally:
+        acq.stop()
+
+    temperatures = [s.cells[0].temperature for s in collect.samples]
+    assert sum(t != t for t in temperatures) == 1
+    assert heater.opens == 1
+
+
+def test_unacknowledged_setpoint_is_retried(tmp_path):
+    config = make_config(tmp_path)
+    chamber = SimulatedChamber(config.cells, config.simulation, seed=0)
+    heater = CountingHeater(chamber.heaters[0])
+    acq = Acquisition(config, [heater, chamber.heaters[1]], chamber.qcm)
+    collect = Collector()
+    acq.add_listener(collect)
+
+    acq.start()
+    try:
+        collect.wait_for(lambda s: len(s) >= 2)
+
+        # Fails for the first request (3 attempts) and the first retry
+        # of the next cycle.
+        heater.fail_writes = 4
+        acq.set_setpoint(0, 300.0)
+        collect.wait_for(lambda s: s[-1].cells[0].target_setpoint == 300.0)
+    finally:
+        acq.stop()
+
+    assert heater.writes == [300.0]
+    assert heater.opens == 1
+
+
+def test_feedback_survives_sporadic_failures(tmp_path):
+    config = make_config(tmp_path, interval=0.01)
+    config.simulation.failure_rate = 0.3
+    chamber = SimulatedChamber(config.cells, config.simulation, seed=3)
+    acq = Acquisition(config, chamber.heaters, chamber.qcm)
+    collect = Collector()
+    acq.add_listener(collect)
+
+    acq.start()
+    try:
+        collect.wait_for(
+            lambda s: len(s) >= 3 and s[-1].cells[1].target_setpoint == 25.0
+        )
+        acq.set_setpoint(1, 400.0)
+        collect.wait_for(lambda s: s[-1].cells[1].target_setpoint == 400.0)
+        acq.enable_feedback(1, 1.0)
+        collect.wait_for(lambda s: s[-1].cells[1].feedback)
+        n = len(collect.samples)
+        collect.wait_for(lambda s: len(s) >= n + 300, timeout=20)
+    finally:
+        acq.stop()
+
+    after = collect.samples[n:]
+    assert all(s.cells[1].feedback for s in after)
+    missing = sum(s.cells[1].temperature != s.cells[1].temperature for s in after)
+    # 0.3**3 = 2.7 % of the requests are lost despite the retries.
+    assert 0 < missing < 0.08 * len(after)
+    # The rate is ~0 at 400 °C, so the feedback keeps raising the setpoint.
+    assert after[-1].cells[1].target_setpoint > 400.0

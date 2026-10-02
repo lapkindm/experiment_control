@@ -11,6 +11,9 @@ Each simulated cell has
 
 The simulation advances on demand from the wall clock, multiplied by
 ``speed``, so it can run faster than real time for testing.
+
+With ``failure_rate`` > 0, requests randomly get no answer (TimeoutError),
+like the real instruments occasionally do.
 """
 
 from __future__ import annotations
@@ -91,7 +94,9 @@ class SimulatedChamber:
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.speed = config.speed
+        self.failure_rate = config.failure_rate
         self._random = random.Random(seed)
+        self._failures = random.Random(None if seed is None else seed + 1)
         self._clock = clock
         self._last = clock()
 
@@ -114,6 +119,15 @@ class SimulatedChamber:
         for cell in self.cells:
             cell.advance(dt)
 
+    def request(self) -> None:
+        """
+        Advance the simulation; fail like an instrument not answering.
+        """
+
+        self.update()
+        if self._failures.random() < self.failure_rate:
+            raise TimeoutError("simulated: no response")
+
     def measured_rate(self, cell: _SimCell) -> float:
         return cell.filtered_rate + self._random.gauss(0, cell.rate_noise)
 
@@ -135,7 +149,7 @@ class SimulatedHeater:
         pass
 
     def read(self) -> HeaterReading:
-        self._chamber.update()
+        self._chamber.request()
         c = self._cell
         return HeaterReading(
             temperature=round(c.temperature, 1),
@@ -145,7 +159,7 @@ class SimulatedHeater:
         )
 
     def set_setpoint(self, value: float) -> None:
-        self._chamber.update()
+        self._chamber.request()
         # The real controller stores one decimal.
         self._cell.setpoint = round(value, 1)
 
@@ -163,7 +177,7 @@ class SimulatedQCM:
         pass
 
     def read(self) -> dict[int, QCMChannel]:
-        self._chamber.update()
+        self._chamber.request()
         return {
             c.cell.sensor: QCMChannel(
                 rate=round(self._chamber.measured_rate(c), 2),

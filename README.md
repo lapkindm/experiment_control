@@ -36,6 +36,31 @@ clamped to `min_setpoint`/`max_setpoint` of that cell.
 
 Closing the program leaves the Eurotherms at their current setpoints.
 
+## Unreliable communication
+
+The QCM and the Eurotherms occasionally do not answer a request. Handling
+(`expctl/acquisition.py`, `[acquisition]` options):
+
+- a failed request is retried `retries` times (default 2) at once;
+- if all attempts fail, that reading is missing (empty in the CSV, "—"
+  in the GUI, skipped by the rate fit) but the device stays open;
+- after `max_missed` (default 5) consecutive missed requests the device
+  is closed and reopened every `reconnect_delay` s;
+- setpoint writes are retried every cycle until the controller
+  acknowledges them; the rate feedback holds while its controller does
+  not answer and is switched off only if the controller is reconnected
+  (a pending setpoint is then discarded, with an error in the event log);
+- the event log stays quiet for isolated misses; it warns from the second
+  consecutive miss and every 10 min lists how many requests needed a
+  retry or were missed.
+
+The SQM-160 driver discards stale input before each command, so a reply
+that arrives after its timeout cannot be taken for the next answer (the
+Eurotherm Modbus driver does this already). Request timeouts are set by
+`timeout` in `[qcm]` and `[[cells]]` (default 1 s).
+
+Test without hardware: `expctl config.toml --simulate --failure-rate 0.2`.
+
 ## Logs
 
 `logs/<YYYYmmdd_HHMMSS>.csv` — one row per acquisition (default every 1 s):
