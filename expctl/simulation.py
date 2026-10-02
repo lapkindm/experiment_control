@@ -192,3 +192,9 @@ class SimulatedQCM:
                 )
                 for c in self._chamber.cells
             }
+
+    def reset(self) -> None:
+        with self._chamber.lock:
+            self._chamber.request()
+            for c in self._chamber.cells:
+                c.thickness = 0.0

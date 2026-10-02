@@ -80,7 +80,7 @@ class SimulationConfig:
 
 @dataclass
 class Config:
-    interval: float = 1.0        # s between acquisitions
+    interval: float = 0.5        # s between acquisitions
     retries: int = 2             # extra attempts for a failed request
     max_missed: int = 5          # consecutive missed requests -> reconnect
     reconnect_delay: float = 5.0 # s between reconnection attempts
@@ -151,7 +151,7 @@ def load_config(path: str | Path) -> Config:
         log_directory = path.parent / log_directory
 
     return Config(
-        interval=acquisition.get("interval", 1.0),
+        interval=acquisition.get("interval", 0.5),
         retries=acquisition.get("retries", 2),
         max_missed=acquisition.get("max_missed", 5),
         reconnect_delay=acquisition.get("reconnect_delay", 5.0),

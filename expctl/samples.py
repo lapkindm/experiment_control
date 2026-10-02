@@ -27,5 +27,6 @@ class CellSample:
 @dataclass(frozen=True)
 class Sample:
     timestamp: float               # Unix time
-    elapsed: float                 # s since acquisition start
+    elapsed: float                 # s since acquisition start or last reset
     cells: list[CellSample] = field(default_factory=list)
+    reset: bool = False            # first sample after a thickness/time reset

@@ -2,7 +2,7 @@
 # Copy to config.toml and adapt ports / limits to your chamber.
 
 [acquisition]
-interval = 1.0            # s between readings of all devices
+interval = 0.5            # s between readings of all devices
 retries = 2               # extra attempts when a device does not answer
 max_missed = 5            # consecutive unanswered requests before the
                           # device is closed and reopened

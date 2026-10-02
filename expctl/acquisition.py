@@ -273,6 +273,8 @@ class Acquisition:
         )
         self._disconnects = [0] * len(config.cells)
         self._t0 = 0.0
+        self._elapsed_t0 = 0.0          # zero of Sample.elapsed
+        self._resetting: Future | None = None
 
         self._listeners: list[Callable[[Sample], None]] = []
         self._commands: queue.Queue = queue.Queue()
@@ -319,13 +321,20 @@ class Acquisition:
     def disable_feedback(self, cell: int) -> None:
         self._commands.put((self._do_disable_feedback, cell))
 
+    def reset_measurement(self) -> None:
+        """
+        Zero the QCM thickness readings and deposition timer, restart the
+        rate fits and the elapsed time.
+        """
+        self._commands.put((self._do_reset,))
+
     # ------------------------------------------------------------------
     # Thread
     # ------------------------------------------------------------------
 
     def _run(self) -> None:
         interval = self.config.interval / self.time_scale
-        t0 = self._t0 = time.monotonic()
+        t0 = self._t0 = self._elapsed_t0 = time.monotonic()
         next_time = t0
         previous = None
 
@@ -334,7 +343,18 @@ class Acquisition:
         try:
             while True:
                 now = time.monotonic()
-                sample = self._acquire(now - t0, deadline=now + 0.9 * interval)
+                sample = self._acquire(
+                    now - self._elapsed_t0, deadline=now + 0.9 * interval
+                )
+
+                # After _acquire: a reading started before the reset is
+                # consumed by now, so the rate fits restart cleanly.
+                if self._check_reset():
+                    sample = replace(
+                        sample,
+                        elapsed=max(0.0, now - self._elapsed_t0),
+                        reset=True,
+                    )
 
                 self._check_heaters()
 
@@ -470,6 +490,34 @@ class Acquisition:
     # ------------------------------------------------------------------
     # Setpoints and feedback (acquisition thread only)
     # ------------------------------------------------------------------
+
+    def _do_reset(self) -> None:
+        if self._resetting is not None:
+            log.warning("A reset is already in progress.")
+            return
+        # Queued behind any read in progress on the QCM worker.
+        self._resetting = self._qcm.submit(lambda d: d.reset() or True)
+
+    def _check_reset(self) -> bool:
+        """
+        Finish a reset once the QCM has acknowledged it.
+        """
+
+        if self._resetting is None or not self._resetting.done():
+            return False
+
+        finished, ok = self._resetting.result()
+        self._resetting = None
+
+        if not ok:
+            log.error("Reset failed: the QCM did not acknowledge it.")
+            return False
+
+        for rate in self._rate:
+            rate.reset()
+        self._elapsed_t0 = finished
+        log.info("Thickness and time reset to zero.")
+        return True
 
     def _request_setpoint(self, index: int, value: float) -> float:
         """

@@ -44,6 +44,7 @@ class QCM(Protocol):
     def open(self) -> None: ...
     def close(self) -> None: ...
     def read(self) -> dict[int, QCMChannel]: ...
+    def reset(self) -> None: ...
 
 
 # ----------------------------------------------------------------------
@@ -179,3 +180,13 @@ class SQM160Monitor:
             sensor: QCMChannel(m.rate, m.thickness, m.frequency)
             for sensor, m in self._sqm.sensor_measurements().items()
         }
+
+    def reset(self) -> None:
+        """
+        Zero the thickness readings and the deposition timer.
+        """
+        if self._sqm is None:
+            raise ConnectionError("SQM-160 is not connected.")
+
+        self._sqm.reset_measurement()
+        self._sqm.reset_time()

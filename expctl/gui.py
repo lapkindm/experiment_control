@@ -393,6 +393,14 @@ class MainWindow(QMainWindow):
         )
         toolbar.addWidget(self.log_label)
 
+        toolbar.addSeparator()
+        reset_button = QPushButton("Reset thickness && time")
+        reset_button.setToolTip(
+            "Zero the QCM thickness readings and deposition timer"
+        )
+        reset_button.clicked.connect(self._reset_clicked)
+        toolbar.addWidget(reset_button)
+
         spacer = QWidget()
         spacer.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
@@ -430,6 +438,17 @@ class MainWindow(QMainWindow):
             "color: #2e7d32; font-weight: bold;" if active else "color: #b71c1c;"
         )
 
+    def _reset_clicked(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Reset",
+            "Zero the thickness readings and the deposition timer of the "
+            "QCM?\n\nThe rate is unavailable for half a fit window "
+            "afterwards; rate feedback holds the setpoint meanwhile.",
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.acquisition.reset_measurement()
+
     def _window_changed(self, index: int) -> None:
         self.window_seconds = WINDOWS[index][1]
         self._redraw()
@@ -444,6 +463,18 @@ class MainWindow(QMainWindow):
 
     def on_sample(self, sample: Sample) -> None:
         self.history.append(sample)
+
+        if sample.reset:
+            for plot in (self.temperature_plot, self.rate_plot, self.thickness_plot):
+                plot.addItem(
+                    pg.InfiniteLine(
+                        pos=sample.timestamp,
+                        angle=90,
+                        pen=pg.mkPen("#757575", width=1, style=Qt.PenStyle.DotLine),
+                        label="reset" if plot is self.temperature_plot else None,
+                        labelOpts={"position": 0.95, "color": "#757575"},
+                    )
+                )
         # Samples may arrive fast in an accelerated simulation.
         now = time.monotonic()
         if now - self._last_redraw < 0.2:

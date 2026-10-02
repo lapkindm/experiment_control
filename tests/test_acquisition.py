@@ -356,3 +356,75 @@ def test_slow_device_does_not_delay_others(tmp_path):
     assert present(s.cells[1].temperature for s in samples) == len(samples)
     assert present(s.cells[1].thickness for s in samples) == len(samples)
     assert 0 < present(s.cells[0].temperature for s in samples) < len(samples) / 3
+
+
+def test_reset_zeroes_thickness_and_time(tmp_path):
+    config = make_config(tmp_path)
+    chamber = SimulatedChamber(config.cells, config.simulation, seed=0)
+    with chamber.lock:
+        for c in chamber.cells:
+            c.thickness = 0.5                       # kÅ
+    acq = Acquisition(config, chamber.heaters, chamber.qcm)
+    collect = Collector()
+    acq.add_listener(collect)
+
+    acq.start()
+    try:
+        collect.wait_for(lambda s: len(s) >= 20)
+        before = collect.samples[-1]
+        acq.reset_measurement()
+        collect.wait_for(lambda s: any(x.reset for x in s))
+        n = len(collect.samples)
+        collect.wait_for(lambda s: len(s) >= n + 3)
+    finally:
+        acq.stop()
+
+    assert before.cells[0].thickness == pytest.approx(0.5, abs=0.002)
+    assert before.elapsed > 0.3
+
+    i = next(i for i, s in enumerate(collect.samples) if s.reset)
+    after = collect.samples[i + 1]
+    assert sum(s.reset for s in collect.samples) == 1
+    assert after.elapsed < 2 * config.interval
+    assert all(abs(c.thickness) < 0.002 for c in after.cells)
+    # The rate fit starts over (no fake negative rate from the jump).
+    assert all(c.rate != c.rate for c in after.cells)
+
+
+class FailingReset:
+    def __init__(self, qcm):
+        self.qcm = qcm
+        self.name = qcm.name
+
+    def open(self):
+        pass
+
+    def close(self):
+        pass
+
+    def read(self):
+        return self.qcm.read()
+
+    def reset(self):
+        raise TimeoutError("no response")
+
+
+def test_failed_reset_is_reported(tmp_path, caplog):
+    config = make_config(tmp_path)
+    chamber = SimulatedChamber(config.cells, config.simulation, seed=0)
+    acq = Acquisition(config, chamber.heaters, FailingReset(chamber.qcm))
+    collect = Collector()
+    acq.add_listener(collect)
+
+    with caplog.at_level("ERROR"):
+        acq.start()
+        try:
+            collect.wait_for(lambda s: len(s) >= 3)
+            acq.reset_measurement()
+            n = len(collect.samples)
+            collect.wait_for(lambda s: len(s) >= n + 5)
+        finally:
+            acq.stop()
+
+    assert "Reset failed" in caplog.text
+    assert not any(s.reset for s in collect.samples)
