@@ -16,7 +16,6 @@ from PyQt6.QtGui import QAction, QFont
 from PyQt6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
-    QFormLayout,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -80,6 +79,7 @@ class History:
 
     FIELDS = [
         "temperature", "working_setpoint", "rate", "rate_target", "qcm_rate",
+        "thickness",
     ]
 
     def __init__(self, n_cells: int) -> None:
@@ -140,31 +140,30 @@ class CellPanel(QGroupBox):
         )
 
         big = QFont()
-        big.setPointSize(16)
+        big.setPointSize(15)
         big.setBold(True)
 
-        self.temperature = QLabel("—")
-        self.temperature.setFont(big)
-        self.rate = QLabel("—")
-        self.rate.setFont(big)
-        self.setpoint = QLabel("—")
-        self.output = QLabel("—")
-        self.qcm_rate = QLabel("—")
-        self.thickness = QLabel("—")
-        self.frequency = QLabel("—")
+        def value(row: int, col: int, caption: str) -> QLabel:
+            label = QLabel(caption)
+            label.setStyleSheet("color: gray; font-weight: normal;")
+            number = QLabel("—")
+            number.setFont(big)
+            values.addWidget(label, 2 * row, col)
+            values.addWidget(number, 2 * row + 1, col)
+            return number
 
         values = QGridLayout()
-        values.addWidget(QLabel("Temperature"), 0, 0)
-        values.addWidget(self.temperature, 1, 0)
-        values.addWidget(QLabel(f"Rate ({rate_window:g} s fit)"), 0, 1)
-        values.addWidget(self.rate, 1, 1)
-
-        details = QFormLayout()
-        details.addRow("Setpoint (target / working):", self.setpoint)
-        details.addRow("Output:", self.output)
-        details.addRow("Thickness:", self.thickness)
-        details.addRow("Rate reported by QCM:", self.qcm_rate)
-        details.addRow("Crystal frequency:", self.frequency)
+        values.setHorizontalSpacing(16)
+        self.temperature = value(0, 0, "Temperature")
+        self.setpoint = value(0, 1, "Setpoint")
+        self.working_setpoint = value(0, 2, "Working setpoint")
+        self.output = value(0, 3, "Output")
+        self.rate = value(1, 0, f"Rate ({rate_window:g} s fit)")
+        self.qcm_rate = value(1, 1, "Rate (QCM)")
+        self.thickness = value(1, 2, "Thickness")
+        self.frequency = value(1, 3, "Crystal frequency")
+        for col in range(4):
+            values.setColumnStretch(col, 1)
 
         # Setpoint control
         self.setpoint_input = QDoubleSpinBox()
@@ -200,7 +199,7 @@ class CellPanel(QGroupBox):
 
         layout = QVBoxLayout(self)
         layout.addLayout(values)
-        layout.addLayout(details)
+        layout.addSpacing(6)
         layout.addLayout(controls)
 
     def _feedback_clicked(self, checked: bool) -> None:
@@ -213,14 +212,12 @@ class CellPanel(QGroupBox):
     def update_values(self, cell: CellSample) -> None:
         self.temperature.setText(_fmt(cell.temperature, ".1f", "°C"))
         self.rate.setText(_fmt(cell.rate, ".3f", "Å/s"))
-        self.setpoint.setText(
-            f"{_fmt(cell.target_setpoint, '.1f', '°C')} / "
-            f"{_fmt(cell.working_setpoint, '.1f', '°C')}"
-        )
+        self.setpoint.setText(_fmt(cell.target_setpoint, ".1f", "°C"))
+        self.working_setpoint.setText(_fmt(cell.working_setpoint, ".1f", "°C"))
         self.output.setText(_fmt(cell.output, ".1f", "%"))
         self.qcm_rate.setText(_fmt(cell.qcm_rate, ".2f", "Å/s"))
         self.thickness.setText(_fmt(cell.thickness, ".3f", "kÅ"))
-        self.frequency.setText(_fmt(cell.frequency, ",.1f", "Hz"))
+        self.frequency.setText(_fmt(cell.frequency / 1e6, ".6f", "MHz"))
 
         # Show the controller's setpoint unless the user is editing it.
         if (
@@ -264,7 +261,7 @@ class MainWindow(QMainWindow):
         self._last_redraw = 0.0
 
         self.setWindowTitle(title)
-        self.resize(1300, 900)
+        self.resize(1300, 1000)
 
         self._build_toolbar()
 
@@ -293,16 +290,23 @@ class MainWindow(QMainWindow):
         self.rate_plot = plots.addPlot(
             row=1, col=0, axisItems={"bottom": pg.DateAxisItem()}
         )
+        self.thickness_plot = plots.addPlot(
+            row=2, col=0, axisItems={"bottom": pg.DateAxisItem()}
+        )
         self.rate_plot.setXLink(self.temperature_plot)
+        self.thickness_plot.setXLink(self.temperature_plot)
 
         self.temperature_plot.setLabel("left", "Temperature", units="°C")
         self.rate_plot.setLabel("left", "Rate (Å/s)")
         self.rate_plot.getAxis("left").enableAutoSIPrefix(False)
+        self.thickness_plot.setLabel("left", "Thickness (kÅ)")
+        self.thickness_plot.getAxis("left").enableAutoSIPrefix(False)
 
         self.curves = {}
         for plot, fields in [
             (self.temperature_plot, ("temperature", "working_setpoint")),
             (self.rate_plot, ("rate", "rate_target")),
+            (self.thickness_plot, ("thickness", None)),
         ]:
             plot.showGrid(x=True, y=True, alpha=0.3)
             plot.setClipToView(True)
@@ -317,6 +321,8 @@ class MainWindow(QMainWindow):
                 self.curves[(i, solid)] = plot.plot(
                     pen=pg.mkPen(color, width=2), name=cell.name
                 )
+                if dashed is None:
+                    continue
                 self.curves[(i, dashed)] = plot.plot(
                     pen=pg.mkPen(color, width=1, style=Qt.PenStyle.DashLine),
                     name=f"{cell.name} {'setpoint' if plot is self.temperature_plot else 'target'}",
@@ -467,7 +473,7 @@ class MainWindow(QMainWindow):
             self.temperature_plot.setXRange(
                 now - self.window_seconds, now, padding=0
             )
-        for plot in (self.temperature_plot, self.rate_plot):
+        for plot in (self.temperature_plot, self.rate_plot, self.thickness_plot):
             plot.enableAutoRange(y=True)
 
     # ------------------------------------------------------------------
