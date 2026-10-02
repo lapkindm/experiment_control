@@ -362,6 +362,10 @@ class MainWindow(QMainWindow):
         self.rate_plot.getAxis("left").enableAutoSIPrefix(False)
         self.thickness_plot.setLabel("left", "Thickness (Å)")
         self.thickness_plot.setLabel("bottom", "Elapsed time (h:mm:ss)")
+
+        # Same width for all left axes, so the plot areas line up.
+        for plot in (self.temperature_plot, self.rate_plot, self.thickness_plot):
+            plot.getAxis("left").setWidth(70)
         self.thickness_plot.getAxis("left").enableAutoSIPrefix(False)
 
         self.curves = {}
