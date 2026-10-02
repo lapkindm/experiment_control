@@ -11,9 +11,12 @@ machine without pyusb / minimalmodbus.
 
 from __future__ import annotations
 
+import logging
 from typing import NamedTuple, Protocol
 
 from .config import CellConfig, QCMConfig
+
+log = logging.getLogger(__name__)
 
 
 class HeaterReading(NamedTuple):
@@ -54,12 +57,17 @@ class QCM(Protocol):
 class EurothermHeater:
     """
     Eurotherm 2408 / 3508 temperature controller.
+
+    The process value, setpoints and output occupy contiguous Modbus
+    registers (1-5), so they are read with one request. If a controller
+    rejects that request, the registers are read one by one instead.
     """
 
     def __init__(self, cell: CellConfig) -> None:
         self.cell = cell
         self.name = f"{cell.name} Eurotherm"
         self._controller = None
+        self._block_read = True
 
     def open(self) -> None:
         from eurotherm import Eurotherm2408, Eurotherm3508
@@ -94,6 +102,26 @@ class EurothermHeater:
             )
 
         self._controller = controller
+        self._block_read = self._block_read_supported()
+
+    def _block_read_supported(self, attempts: int = 3) -> bool:
+        import minimalmodbus
+
+        for attempt in range(attempts):
+            try:
+                self._read_block()
+                return True
+            except Exception as exc:
+                if isinstance(exc.__cause__, minimalmodbus.SlaveReportedException):
+                    log.warning(
+                        "%s rejects reading registers %d-%d at once (%s); "
+                        "reading them one by one.",
+                        self.name, *self._block_range(), exc,
+                    )
+                    return False
+                if attempt == attempts - 1:
+                    self.close()
+                    raise
 
     def close(self) -> None:
         if self._controller is not None:
@@ -103,6 +131,9 @@ class EurothermHeater:
                 self._controller = None
 
     def read(self) -> HeaterReading:
+        if self._block_read:
+            return self._read_block()
+
         c = self._require_open()
         return HeaterReading(
             temperature=c.temperature,
@@ -110,6 +141,35 @@ class EurothermHeater:
             working_setpoint=c.working_setpoint,
             output=c.output_level,
         )
+
+    @staticmethod
+    def _registers():
+        from eurotherm.registers.series2000 import (
+            OUTPUT_LEVEL, PV, TARGET_SP, WORKING_SP,
+        )
+
+        # In HeaterReading order.
+        return PV, TARGET_SP, WORKING_SP, OUTPUT_LEVEL
+
+    @classmethod
+    def _block_range(cls) -> tuple[int, int]:
+        addresses = [r.address for r in cls._registers()]
+        return min(addresses), max(addresses)
+
+    def _read_block(self) -> HeaterReading:
+        c = self._require_open()
+        first, last = self._block_range()
+        raw = c.transport.read_registers(first, last - first + 1)
+
+        def value(register):
+            v = raw[register.address - first]
+            # Two's complement: the output can be negative (heat/cool);
+            # temperatures never reach 3276.8 °C.
+            if v >= 0x8000:
+                v -= 0x10000
+            return v / 10 ** register.decimals
+
+        return HeaterReading(*(value(r) for r in self._registers()))
 
     def set_setpoint(self, value: float) -> None:
         self._require_open().target_setpoint = value

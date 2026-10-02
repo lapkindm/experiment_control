@@ -76,6 +76,11 @@ Eurotherm Modbus driver does this already). Request timeouts are set by
 `timeout` in `[qcm]` (default 1 s) and `[[cells]]` (Eurotherm, default
 0.3 s, so a retry still fits into one 0.5 s interval).
 
+Each Eurotherm reading (process value, target and working setpoint,
+output: Modbus registers 1-5) is a single Modbus request. If a controller
+rejects that request when connecting, expctl falls back to reading the
+registers one by one and logs a warning.
+
 Test without hardware: `expctl config.toml --simulate --failure-rate 0.2`.
 
 ## Logs
