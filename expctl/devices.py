@@ -27,8 +27,8 @@ class HeaterReading(NamedTuple):
 
 
 class QCMChannel(NamedTuple):
-    rate: float                  # Å/s in Angstrom display mode
-    thickness: float             # kÅ in Angstrom display mode
+    rate: float                  # Å/s in Angstrom display mode, unfiltered
+    thickness: float             # Å in Angstrom display mode
     frequency: float             # Hz
 
 
@@ -224,6 +224,23 @@ class SQM160Monitor:
 
         sqm.open()
         self._sqm = sqm
+
+        self._check_display_mode()
+
+    def _check_display_mode(self) -> None:
+        from sqm160 import DisplayMode
+
+        try:
+            mode = self._sqm.system_parameters().display_mode
+        except Exception as exc:
+            log.warning("Could not read the SQM-160 display mode: %s", exc)
+            return
+
+        if mode != DisplayMode.ANGSTROM:
+            log.error(
+                "SQM-160 display mode is %s, not ANGSTROM: rates and "
+                "thicknesses will be in the wrong units.", mode.name,
+            )
 
     def close(self) -> None:
         if self._sqm is not None:

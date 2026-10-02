@@ -20,7 +20,7 @@ from .acquisition import Acquisition
 from .config import Config, load_config
 from .datalog import CsvLogger
 from .samples import Sample
-from .units import RATE_TO_DISPLAY, THICKNESS_TO_DISPLAY
+from .units import RATE_TO_DISPLAY
 
 
 def build_devices(config: Config):
@@ -73,7 +73,7 @@ def _status_line(config: Config, sample: Sample) -> str:
             f"{cell.name}: T={f(values.temperature, '.1f')} °C "
             f"SP={f(values.target_setpoint, '.1f')} °C "
             f"rate={f(values.rate * RATE_TO_DISPLAY, '.2f')} Å/min "
-            f"d={f(values.thickness * THICKNESS_TO_DISPLAY, '.0f')} Å"
+            f"d={f(values.thickness, '.1f')} Å"
         )
     return " | ".join(parts)
 

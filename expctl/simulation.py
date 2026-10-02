@@ -5,9 +5,10 @@ Each simulated cell has
 - a temperature following the setpoint with first-order lag
   (stand-in for the Eurotherm PID loop and the thermal mass of the cell),
 - an Arrhenius-like deposition rate  r = A * exp(-Ea / kB T),
-- a QCM whose reported rate is low-pass filtered and has additive noise
-  (poor at low rates), and whose thickness has a small noise and is
-  rounded to 1 Å, as displayed by the SQM-160.
+- a QCM modelled on a real SQM-160 (time base 0.3 s, film density 0.5):
+  the thickness is quantised in steps of the frequency resolution
+  (0.296 Å) and flips by about one step; the reported rate is unfiltered,
+  i.e. quantised in steps of one thickness step per time base (0.99 Å/s).
 
 The simulation advances on demand from the wall clock, multiplied by
 ``speed``, so it can run faster than real time for testing.
@@ -38,8 +39,8 @@ class _SimCell:
         activation_energy: float = 2.0,
         thermal_tau: float = 40.0,
         qcm_tau: float = 3.0,
-        rate_noise: float = 0.05,
-        thickness_noise: float = 0.3,
+        thickness_step: float = 0.296,
+        time_base: float = 0.3,
     ) -> None:
         self.cell = cell
         self.temperature = 25.0
@@ -47,14 +48,14 @@ class _SimCell:
         self.output = 0.0
         self.rate = 0.0
         self.filtered_rate = 0.0
-        self.thickness = 0.0           # kÅ
+        self.thickness = 0.0           # Å
         self.frequency = 6.0e6         # Hz
 
         self.activation_energy = activation_energy
         self.thermal_tau = thermal_tau
         self.qcm_tau = qcm_tau
-        self.rate_noise = rate_noise              # Å/s
-        self.thickness_noise = thickness_noise    # Å
+        self.thickness_step = thickness_step      # Å
+        self.rate_step = thickness_step / time_base   # Å/s
 
         # Prefactor chosen so that the rate is 1 Å/s at the reference T.
         self.prefactor = math.exp(
@@ -78,8 +79,8 @@ class _SimCell:
         alpha = 1 - math.exp(-dt / self.qcm_tau)
         self.filtered_rate += (rate - self.filtered_rate) * alpha
 
-        self.thickness += rate * dt / 1000.0
-        self.frequency -= rate * dt * 0.05
+        self.thickness += rate * dt
+        self.frequency -= rate * dt * 0.4
 
 
 class SimulatedChamber:
@@ -131,12 +132,15 @@ class SimulatedChamber:
         if self._failures.random() < self.failure_rate:
             raise TimeoutError("simulated: no response")
 
+    def _quantise(self, value: float, step: float) -> float:
+        noisy = value + self._random.gauss(0, 0.5 * step)
+        return round(noisy / step) * step
+
     def measured_rate(self, cell: _SimCell) -> float:
-        return cell.filtered_rate + self._random.gauss(0, cell.rate_noise)
+        return self._quantise(cell.filtered_rate, cell.rate_step)
 
     def measured_thickness(self, cell: _SimCell) -> float:
-        noise = self._random.gauss(0, cell.thickness_noise) / 1000.0
-        return cell.thickness + noise
+        return self._quantise(cell.thickness, cell.thickness_step)
 
 
 class SimulatedHeater:

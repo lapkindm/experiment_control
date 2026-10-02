@@ -35,7 +35,7 @@ from .acquisition import Acquisition
 from .config import CellConfig, Config
 from .datalog import CsvLogger
 from .samples import CellSample, Sample
-from .units import DISPLAY_SCALE, RATE_TO_DISPLAY, THICKNESS_TO_DISPLAY
+from .units import DISPLAY_SCALE, RATE_TO_DISPLAY
 
 COLORS = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e", "#8c564b"]
 
@@ -271,9 +271,7 @@ class CellPanel(QGroupBox):
         self.qcm_rate.setText(
             _fmt(cell.qcm_rate * RATE_TO_DISPLAY, ".1f", "Å/min")
         )
-        self.thickness.setText(
-            _fmt(cell.thickness * THICKNESS_TO_DISPLAY, ".0f", "Å")
-        )
+        self.thickness.setText(_fmt(cell.thickness, ".1f", "Å"))
         self.frequency.setText(_fmt(cell.frequency / 1e6, ".6f", "MHz"))
 
         # Show the controller's setpoint unless the user is editing it.

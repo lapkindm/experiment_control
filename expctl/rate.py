@@ -5,7 +5,8 @@ At low rates the rate reported by the QCM is dominated by noise and its
 display resolution. Instead, the rate is taken as the slope of a
 least-squares straight line through the thickness readings of the last
 ``window`` seconds. Using all points (instead of the difference of the
-first and last) averages the noise and the 1 Å rounding of the thickness.
+first and last) averages the noise and the quantisation of the thickness
+(one step of the crystal frequency resolution, ~0.3 Å).
 
 The estimate lags the true rate by about half the window.
 """
@@ -28,7 +29,7 @@ class ThicknessRate:
 
     def update(self, t: float, thickness: float) -> float:
         """
-        Add the thickness (kÅ) measured at time ``t`` (s) and return the
+        Add the thickness (Å) measured at time ``t`` (s) and return the
         rate in Å/s, or NaN while the window holds too little data.
         """
 
@@ -62,4 +63,4 @@ class ThicknessRate:
             (p[0] - t_first - mean_t) * (p[1] - mean_d) for p in self._points
         )
 
-        return std / stt * 1000.0      # kÅ/s -> Å/s
+        return std / stt

@@ -18,7 +18,7 @@ class CellSample:
     output: float = NAN            # %
     rate: float = NAN              # Å/s, fitted from the thickness
     qcm_rate: float = NAN          # Å/s, as reported by the QCM
-    thickness: float = NAN         # kÅ
+    thickness: float = NAN         # Å
     frequency: float = NAN         # Hz
     rate_target: float = NAN       # Å/s, NaN when feedback is off
     feedback: bool = False

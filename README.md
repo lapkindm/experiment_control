@@ -99,9 +99,12 @@ every *Start logging*. Rows are flushed immediately.
 `logs/events.log` — setpoint changes, feedback on/off, device errors.
 
 Units (log and GUI): °C, %, Hz, rates in Å/min, thickness in Å. The
-target rate is entered in Å/min. (Logs written before 2026-10-02 used
-the SQM-160 units Å/s and kÅ.) The SQM-160 must be in Angstrom display
-mode.
+target rate is entered in Å/min. The SQM-160 must be in Angstrom display
+mode (rate Å/s, thickness Å); expctl logs an error if it is not.
+
+Older logs: before 2026-10-02 (first version) rates were in Å/s and
+thickness ×0.001; logs up to commit `315f96c` have thickness ×1000 too
+large (wrong kÅ assumption) and an invalid fitted rate.
 
 ## Deposition rate
 
@@ -109,21 +112,29 @@ At low rates the rate reported by the QCM is too coarse and noisy. The
 rate used for display and feedback is therefore the slope of a
 least-squares line through the thickness readings of the last
 `[rate] window` seconds (default 30 s; `expctl/rate.py`). It is NaN until
-half a window of data exists, it restarts when the thickness drops
-(crystal change, thickness reset), and it lags the true rate by about
-window/2. This assumes the SQM-160 is in Angstrom display mode
-(thickness in kÅ).
+half a window of data exists, it restarts when the thickness drops by
+more than `reset_threshold` (crystal change, zeroing on the front panel),
+and it lags the true rate by about window/2.
 
-Its noise is set by the thickness resolution (1 Å) and noise. In the
-simulator (0.3 Å thickness noise, 30 s window, 0.5 s interval), under
-rate feedback:
+The rate reported by the SQM-160 (`_qcm_rate`) is unfiltered: one
+thickness step per time base, i.e. it only takes multiples of about
+0.3 Å / 0.3 s ≈ 1 Å/s (60 Å/min). The front panel averages it
+(`rate_filter`), so it looks much quieter there.
 
-| target rate | noise of the fitted rate | variation of the actual rate |
-|---|---|---|
-| 1.2 Å/min (0.02 Å/s) | 36 % | 6 % |
-| 3 Å/min (0.05 Å/s) | 12 % | 1 % |
-| 12 Å/min (0.2 Å/s) | 3 % | 0.1 % |
-| 60 Å/min (1 Å/s) | 0.6 % | < 0.1 % |
+Its noise is set by the thickness resolution: the SQM-160 thickness
+moves in steps of its frequency resolution (0.12 Hz, i.e. 0.296 Å at the
+film density 0.5 measured on our chamber; finer for denser films) and
+flips by about one step. The simulator reproduces this. With a 30 s
+window and 0.5 s interval, under rate feedback:
+
+| target rate | noise of the fitted rate | variation of the actual rate | settles within ±5 % |
+|---|---|---|---|
+| 0.3 Å/min | 56 % | 11 % | no |
+| 0.6 Å/min | 25 % | 3 % | no |
+| 1.2 Å/min | 13 % | 1 % | ~9 min |
+| 3 Å/min | 5 % | 0.2 % | ~5 min |
+| 12 Å/min | 1 % | < 0.1 % | ~5 min |
+| 60 Å/min | 0.2 % | < 0.1 % | ~5 min |
 
 (The actual rate varies much less than the fitted one because the cell
 temperature averages the feedback's corrections.) For very low rates use

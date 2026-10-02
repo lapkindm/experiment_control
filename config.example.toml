@@ -25,7 +25,7 @@ transport = "usb"         # "usb" or "serial"
 # last `window` seconds (the rate reported by the QCM is only logged).
 window = 30.0             # s; longer = less noise, more lag (~window/2)
 min_fraction = 0.5        # report a rate once data span this part of the window
-reset_threshold = 0.005   # kÅ; a larger thickness drop restarts the fit
+reset_threshold = 5.0     # Å; a larger thickness drop restarts the fit
 
 [simulation]
 enabled = false           # or start with --simulate

@@ -363,7 +363,7 @@ def test_reset_zeroes_thickness_and_time(tmp_path):
     chamber = SimulatedChamber(config.cells, config.simulation, seed=0)
     with chamber.lock:
         for c in chamber.cells:
-            c.thickness = 0.5                       # kÅ
+            c.thickness = 500.0                     # Å
     acq = Acquisition(config, chamber.heaters, chamber.qcm)
     collect = Collector()
     acq.add_listener(collect)
@@ -379,7 +379,7 @@ def test_reset_zeroes_thickness_and_time(tmp_path):
     finally:
         acq.stop()
 
-    assert before.cells[0].thickness == pytest.approx(0.5, abs=0.002)
+    assert before.cells[0].thickness == pytest.approx(500.0, abs=1.0)
     assert before.elapsed > 0.3
 
     i = next(i for i, s in enumerate(collect.samples) if s.reset)
@@ -390,7 +390,7 @@ def test_reset_zeroes_thickness_and_time(tmp_path):
     since = [s.since_start for s in collect.samples]
     assert all(b > a for a, b in zip(since, since[1:]))
     assert after.since_start > before.since_start
-    assert all(abs(c.thickness) < 0.002 for c in after.cells)
+    assert all(abs(c.thickness) < 1.0 for c in after.cells)
     # The rate fit starts over (no fake negative rate from the jump).
     assert all(c.rate != c.rate for c in after.cells)
 

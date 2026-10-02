@@ -55,7 +55,7 @@ def test_rejects_nonpositive_target():
 @pytest.mark.parametrize("target", [0.05, 0.2, 1.0])
 def test_closed_loop_with_simulator(target):
     """
-    With the rate fitted from the (noisy, 1 Å rounded) thickness, the
+    With the rate fitted from the (quantised, noisy) thickness, the
     default gains bring the simulated cell to the target rate and hold it.
     """
 

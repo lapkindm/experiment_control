@@ -39,7 +39,7 @@ class RateConfig:
     window: float = 30.0          # s, length of the linear fit
     min_fraction: float = 0.5     # report a rate once the data span this
                                   # fraction of the window
-    reset_threshold: float = 0.005  # kÅ, thickness drop treated as a reset
+    reset_threshold: float = 5.0  # Å, thickness drop treated as a reset
 
 
 @dataclass

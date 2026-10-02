@@ -18,7 +18,7 @@ def test_csv_units(tmp_path):
                     rate=0.2,               # Å/s
                     qcm_rate=0.16,          # Å/s
                     rate_target=0.05,       # Å/s
-                    thickness=0.123,        # kÅ
+                    thickness=123.4,        # Å
                     frequency=5999994.123,  # Hz
                     feedback=True,
                 )
@@ -34,7 +34,7 @@ def test_csv_units(tmp_path):
     assert row["A_rate"] == "12"            # Å/min
     assert row["A_qcm_rate"] == "9.6"
     assert row["A_rate_target"] == "3"
-    assert row["A_thickness"] == "123"      # Å
+    assert row["A_thickness"] == "123.4"    # Å
     assert row["A_frequency"] == "5999994.123"
     assert row["A_feedback"] == "1"
     assert row["A_SP"] == ""                # NaN
