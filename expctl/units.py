@@ -13,4 +13,5 @@ DISPLAY_SCALE = {
     "rate": RATE_TO_DISPLAY,
     "rate_target": RATE_TO_DISPLAY,
     "qcm_rate": RATE_TO_DISPLAY,
+    "qcm_rate_filtered": RATE_TO_DISPLAY,
 }

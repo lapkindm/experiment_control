@@ -1,4 +1,5 @@
 import math
+import statistics
 
 import pytest
 
@@ -56,3 +57,44 @@ def test_missing_readings_are_skipped():
         thickness = math.nan if t % 3 == 0 else 2.0 * t
         rate = est.update(float(t), thickness)
     assert rate == pytest.approx(2.0)
+
+
+from expctl.rate import PanelRate
+
+
+def test_panel_rate_of_linear_thickness():
+    panel = PanelRate(reset_threshold=5.0)
+    for i in range(20):
+        rate = panel.update(0.5 * i, 100.0 + 0.2 * 0.5 * i, span=2.4)
+    assert rate == pytest.approx(0.2)
+
+
+def test_panel_rate_nan_until_enough_data():
+    panel = PanelRate(reset_threshold=5.0)
+    rates = [panel.update(0.5 * i, 0.1 * i, span=2.4) for i in range(6)]
+    assert all(math.isnan(r) for r in rates[:4])   # less than 1.8 s
+    assert rates[4] == pytest.approx(0.2)
+
+
+def test_panel_rate_noise_like_front_panel():
+    # No deposition, thickness flipping by one 0.296 Å step, read every
+    # 0.5 s: the smoothed rate stays within about ±0.1 Å/s (front panel),
+    # while the raw rate jumps by ±0.99 Å/s.
+    import random
+
+    rng = random.Random(0)
+    panel = PanelRate(reset_threshold=5.0)
+    rates = [
+        panel.update(0.5 * i, 0.296 * rng.choice([-1, 0, 0, 1]), span=2.4)
+        for i in range(400)
+    ]
+    rates = [r for r in rates if r == r]
+    assert max(abs(r) for r in rates) < 0.3
+    assert statistics.pstdev(rates) < 0.15     # raw rate: ~0.65
+
+
+def test_panel_rate_restarts_on_thickness_drop():
+    panel = PanelRate(reset_threshold=5.0)
+    for i in range(10):
+        panel.update(0.5 * i, 500.0 + i, span=2.4)
+    assert math.isnan(panel.update(5.0, 0.0, span=2.4))

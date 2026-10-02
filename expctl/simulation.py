@@ -175,6 +175,7 @@ class SimulatedHeater:
 
 class SimulatedQCM:
     name = "SQM-160 (simulated)"
+    filter_time = 8 * 0.3      # rate_filter * time_base
 
     def __init__(self, chamber: SimulatedChamber) -> None:
         self._chamber = chamber

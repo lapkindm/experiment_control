@@ -92,8 +92,10 @@ Test without hardware: `expctl config.toml --simulate --failure-rate 0.2`.
 
 `logs/<YYYYmmdd_HHMMSS>.csv` — one row per acquisition (default every 0.5 s):
 `time, elapsed_s` (since start or last reset) and for each cell `<key>_T, _SP, _WSP, _output, _rate,
-_qcm_rate, _thickness, _frequency, _rate_target, _feedback`. `_rate` is the
-fitted rate, `_qcm_rate` the rate reported by the SQM-160. A new file starts on
+_qcm_rate, _qcm_rate_filtered, _thickness, _frequency, _rate_target,
+_feedback`. `_rate` is the fitted rate, `_qcm_rate` the (unfiltered) rate
+reported by the SQM-160, `_qcm_rate_filtered` that rate smoothed like the
+SQM-160 front panel. A new file starts on
 every *Start logging*. Rows are flushed immediately.
 
 `logs/events.log` — setpoint changes, feedback on/off, device errors.
@@ -118,8 +120,12 @@ and it lags the true rate by about window/2.
 
 The rate reported by the SQM-160 (`_qcm_rate`) is unfiltered: one
 thickness step per time base, i.e. it only takes multiples of about
-0.3 Å / 0.3 s ≈ 1 Å/s (60 Å/min). The front panel averages it
-(`rate_filter`), so it looks much quieter there.
+0.3 Å / 0.3 s ≈ 1 Å/s (60 Å/min). The front panel averages the last
+`rate_filter` of these, which equals the thickness change over
+`rate_filter × time_base` (2.4 s by default) divided by that time. expctl
+computes the same from the thickness (`_qcm_rate_filtered`, settings
+read from the SQM-160 on connection) and shows it as "Rate (QCM)" in the
+GUI; the CSV has both.
 
 Its noise is set by the thickness resolution: the SQM-160 thickness
 moves in steps of its frequency resolution (0.12 Hz, i.e. 0.296 Å at the

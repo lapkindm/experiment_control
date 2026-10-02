@@ -191,6 +191,10 @@ class SQM160Monitor:
 
     name = "SQM-160"
 
+    # Front-panel rate smoothing: rate_filter * time_base (s), read from
+    # the instrument on connection.
+    filter_time: float | None = None
+
     def __init__(self, config: QCMConfig) -> None:
         self.config = config
         self._sqm = None
@@ -225,17 +229,20 @@ class SQM160Monitor:
         sqm.open()
         self._sqm = sqm
 
-        self._check_display_mode()
+        self._check_settings()
 
-    def _check_display_mode(self) -> None:
+    def _check_settings(self) -> None:
         from sqm160 import DisplayMode
 
         try:
-            mode = self._sqm.system_parameters().display_mode
+            parameters = self._sqm.system_parameters()
         except Exception as exc:
-            log.warning("Could not read the SQM-160 display mode: %s", exc)
+            log.warning("Could not read the SQM-160 system parameters: %s", exc)
             return
 
+        self.filter_time = parameters.rate_filter * parameters.time_base
+
+        mode = parameters.display_mode
         if mode != DisplayMode.ANGSTROM:
             log.error(
                 "SQM-160 display mode is %s, not ANGSTROM: rates and "

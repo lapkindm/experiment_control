@@ -33,7 +33,7 @@ from .config import Config
 from .control import RateFeedback
 from .datalog import CsvLogger
 from .devices import Heater, HeaterReading, QCM, QCMChannel
-from .rate import ThicknessRate
+from .rate import PanelRate, ThicknessRate
 from .units import RATE_TO_DISPLAY
 from .samples import CellSample, Sample
 
@@ -259,6 +259,9 @@ class Acquisition:
             for c in config.cells
         ]
         self._rate = [ThicknessRate(config.rate) for _ in config.cells]
+        self._panel_rate = [
+            PanelRate(config.rate.reset_threshold) for _ in config.cells
+        ]
         self._feedback_on = [False] * len(config.cells)
         self._written_setpoint = [math.nan] * len(config.cells)
         # Setpoint waiting to be acknowledged by the controller, or NaN.
@@ -456,9 +459,12 @@ class Acquisition:
         # time when simulating).
         qcm_time = (qcm_finished - self._t0) * self.time_scale
 
+        # Front-panel smoothing time of the QCM (2.4 s: default settings).
+        filter_time = getattr(self._qcm.link.device, "filter_time", None) or 2.4
+
         cells = []
-        for cell, (_, heater), rate in zip(
-            self.config.cells, heaters, self._rate
+        for cell, (_, heater), rate, panel in zip(
+            self.config.cells, heaters, self._rate, self._panel_rate
         ):
             heater: HeaterReading | None
             channel = qcm.get(cell.sensor)
@@ -476,6 +482,9 @@ class Acquisition:
                     frequency=channel.frequency,
                 )
             values["rate"] = rate.update(qcm_time, thickness)
+            values["qcm_rate_filtered"] = panel.update(
+                qcm_time, thickness, filter_time * self.time_scale
+            )
 
             cells.append(CellSample(**values))
 
@@ -516,7 +525,7 @@ class Acquisition:
             log.error("Reset failed: the QCM did not acknowledge it.")
             return False
 
-        for rate in self._rate:
+        for rate in [*self._rate, *self._panel_rate]:
             rate.reset()
         self._elapsed_t0 = finished
         log.info("Thickness and time reset to zero.")

@@ -127,8 +127,8 @@ class History:
     """
 
     FIELDS = [
-        "temperature", "working_setpoint", "rate", "rate_target", "qcm_rate",
-        "thickness",
+        "temperature", "working_setpoint", "rate", "rate_target",
+        "qcm_rate_filtered", "thickness",
     ]
 
     def __init__(self, n_cells: int) -> None:
@@ -269,7 +269,7 @@ class CellPanel(QGroupBox):
         self.working_setpoint.setText(_fmt(cell.working_setpoint, ".1f", "°C"))
         self.output.setText(_fmt(cell.output, ".1f", "%"))
         self.qcm_rate.setText(
-            _fmt(cell.qcm_rate * RATE_TO_DISPLAY, ".1f", "Å/min")
+            _fmt(cell.qcm_rate_filtered * RATE_TO_DISPLAY, ".1f", "Å/min")
         )
         self.thickness.setText(_fmt(cell.thickness, ".1f", "Å"))
         self.frequency.setText(_fmt(cell.frequency / 1e6, ".6f", "MHz"))
@@ -405,7 +405,7 @@ class MainWindow(QMainWindow):
                         name=f"{cell.name} QCM rate",
                     )
                     curve.setZValue(-1)
-                    self.curves[(i, "qcm_rate")] = curve
+                    self.curves[(i, "qcm_rate_filtered")] = curve
 
         # Event log
         self.events = QPlainTextEdit()
