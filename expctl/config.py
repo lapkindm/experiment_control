@@ -19,15 +19,27 @@ class FeedbackConfig:
 
     The loop works on the logarithmic rate error ln(target / rate), because
     the evaporation rate depends roughly exponentially on temperature. A
-    gain of ``kp = 25`` therefore means: a 10 % rate deficit raises the
-    setpoint by about 2.5 °C.
+    gain of ``ki = 0.3`` therefore means: a persistent 10 % rate deficit
+    raises the setpoint by about 0.03 °C/s, i.e. 1.8 °C/min.
     """
 
-    kp: float = 25.0             # °C per unit of ln(target / rate)
-    ki: float = 0.4              # °C per second per unit of ln(target / rate)
-    filter_tau: float = 5.0      # s, low-pass filter on the measured rate
+    kp: float = 2.0              # °C per unit of ln(target / rate)
+    ki: float = 0.3              # °C per second per unit of ln(target / rate)
+    filter_tau: float = 0.0      # s, extra low-pass filter on the rate
     max_slew: float = 10.0       # °C per minute, limit on setpoint changes
     rate_floor: float = 0.02     # fraction of target used as minimum rate
+
+
+@dataclass
+class RateConfig:
+    """
+    Rate calculation from the QCM thickness (see ``expctl.rate``).
+    """
+
+    window: float = 30.0          # s, length of the linear fit
+    min_fraction: float = 0.5     # report a rate once the data span this
+                                  # fraction of the window
+    reset_threshold: float = 0.005  # kÅ, thickness drop treated as a reset
 
 
 @dataclass
@@ -72,6 +84,7 @@ class Config:
     log_directory: Path = Path("logs")
     log_autostart: bool = True
     qcm: QCMConfig = field(default_factory=QCMConfig)
+    rate: RateConfig = field(default_factory=RateConfig)
     cells: list[CellConfig] = field(default_factory=list)
     simulation: SimulationConfig = field(default_factory=SimulationConfig)
 
@@ -137,6 +150,7 @@ def load_config(path: str | Path) -> Config:
         log_directory=log_directory,
         log_autostart=logging_.get("autostart", True),
         qcm=_build(QCMConfig, data.get("qcm", {}), "qcm"),
+        rate=_build(RateConfig, data.get("rate", {}), "rate"),
         cells=cells,
         simulation=_build(
             SimulationConfig, data.get("simulation", {}), "simulation"

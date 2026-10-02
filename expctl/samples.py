@@ -16,7 +16,8 @@ class CellSample:
     target_setpoint: float = NAN   # °C
     working_setpoint: float = NAN  # °C
     output: float = NAN            # %
-    rate: float = NAN              # Å/s
+    rate: float = NAN              # Å/s, fitted from the thickness
+    qcm_rate: float = NAN          # Å/s, as reported by the QCM
     thickness: float = NAN         # kÅ
     frequency: float = NAN         # Hz
     rate_target: float = NAN       # Å/s, NaN when feedback is off

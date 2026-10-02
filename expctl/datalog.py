@@ -22,6 +22,7 @@ CELL_FIELDS = [
     ("WSP", "working_setpoint"),
     ("output", "output"),
     ("rate", "rate"),
+    ("qcm_rate", "qcm_rate"),
     ("thickness", "thickness"),
     ("frequency", "frequency"),
     ("rate_target", "rate_target"),

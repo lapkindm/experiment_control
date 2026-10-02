@@ -2,9 +2,10 @@ import math
 
 import pytest
 
-from expctl.config import CellConfig, FeedbackConfig, SimulationConfig
+from expctl.config import CellConfig, FeedbackConfig, RateConfig, SimulationConfig
 from expctl.control import RateFeedback
-from expctl.simulation import SimulatedChamber
+from expctl.rate import ThicknessRate
+from expctl.simulation import KB, SimulatedChamber
 
 
 def make_feedback(**kwargs):
@@ -51,10 +52,11 @@ def test_rejects_nonpositive_target():
         make_feedback().start(target=0.0, setpoint=700.0)
 
 
-@pytest.mark.parametrize("target", [0.3, 1.0, 3.0])
+@pytest.mark.parametrize("target", [0.05, 0.2, 1.0])
 def test_closed_loop_with_simulator(target):
     """
-    Default gains bring the simulated cell to the target rate and hold it.
+    With the rate fitted from the (noisy, 1 Å rounded) thickness, the
+    default gains bring the simulated cell to the target rate and hold it.
     """
 
     now = [0.0]
@@ -64,25 +66,29 @@ def test_closed_loop_with_simulator(target):
     )
     heater, qcm = chamber.heaters[0], chamber.qcm
 
-    # Preheat 30 °C below the 1 Å/s temperature (800 °C).
-    heater.set_setpoint(770.0)
-    for _ in range(600):
+    # Preheat 20 °C below the temperature giving the target rate
+    # (simulated cell: 1 Å/s at 800 °C, Ea = 2 eV).
+    t_target = 1 / (1 / 1073.15 - KB * math.log(target) / 2.0) - 273.15
+    heater.set_setpoint(t_target - 20)
+    for _ in range(900):
         now[0] += 1.0
         heater.read()
 
     fb = RateFeedback(cell.feedback, cell.min_setpoint, cell.max_setpoint)
     fb.start(target, heater.read().target_setpoint)
+    estimator = ThicknessRate(RateConfig(window=30.0))
 
     rates = []
     for step in range(3600):
         now[0] += 1.0
-        rate = qcm.read()[1].rate
+        rate = estimator.update(now[0], qcm.read()[1].thickness)
         setpoint = fb.update(rate, dt=1.0)
-        heater.set_setpoint(setpoint)
-        if step >= 3000:
+        if setpoint is not None:
+            heater.set_setpoint(setpoint)
+        if step >= 1800:
             rates.append(chamber.cells[0].true_rate())
 
     mean = sum(rates) / len(rates)
     assert mean == pytest.approx(target, rel=0.03)
-    assert max(rates) < target * 1.05
-    assert min(rates) > target * 0.95
+    assert max(rates) < target * 1.08
+    assert min(rates) > target * 0.92

@@ -78,7 +78,9 @@ class History:
     Growable column store of the samples received so far.
     """
 
-    FIELDS = ["temperature", "working_setpoint", "rate", "rate_target"]
+    FIELDS = [
+        "temperature", "working_setpoint", "rate", "rate_target", "qcm_rate",
+    ]
 
     def __init__(self, n_cells: int) -> None:
         self.n_cells = n_cells
@@ -129,7 +131,7 @@ class CellPanel(QGroupBox):
     setpoint_requested = pyqtSignal(float)
     feedback_requested = pyqtSignal(bool, float)
 
-    def __init__(self, cell: CellConfig, color: str) -> None:
+    def __init__(self, cell: CellConfig, color: str, rate_window: float) -> None:
         super().__init__(cell.name)
         self.setStyleSheet(
             f"QGroupBox {{ font-weight: bold; border: 2px solid {color};"
@@ -147,19 +149,21 @@ class CellPanel(QGroupBox):
         self.rate.setFont(big)
         self.setpoint = QLabel("—")
         self.output = QLabel("—")
+        self.qcm_rate = QLabel("—")
         self.thickness = QLabel("—")
         self.frequency = QLabel("—")
 
         values = QGridLayout()
         values.addWidget(QLabel("Temperature"), 0, 0)
         values.addWidget(self.temperature, 1, 0)
-        values.addWidget(QLabel("Rate"), 0, 1)
+        values.addWidget(QLabel(f"Rate ({rate_window:g} s fit)"), 0, 1)
         values.addWidget(self.rate, 1, 1)
 
         details = QFormLayout()
         details.addRow("Setpoint (target / working):", self.setpoint)
         details.addRow("Output:", self.output)
         details.addRow("Thickness:", self.thickness)
+        details.addRow("Rate reported by QCM:", self.qcm_rate)
         details.addRow("Crystal frequency:", self.frequency)
 
         # Setpoint control
@@ -208,12 +212,13 @@ class CellPanel(QGroupBox):
 
     def update_values(self, cell: CellSample) -> None:
         self.temperature.setText(_fmt(cell.temperature, ".1f", "°C"))
-        self.rate.setText(_fmt(cell.rate, ".2f", "Å/s"))
+        self.rate.setText(_fmt(cell.rate, ".3f", "Å/s"))
         self.setpoint.setText(
             f"{_fmt(cell.target_setpoint, '.1f', '°C')} / "
             f"{_fmt(cell.working_setpoint, '.1f', '°C')}"
         )
         self.output.setText(_fmt(cell.output, ".1f", "%"))
+        self.qcm_rate.setText(_fmt(cell.qcm_rate, ".2f", "Å/s"))
         self.thickness.setText(_fmt(cell.thickness, ".3f", "kÅ"))
         self.frequency.setText(_fmt(cell.frequency, ",.1f", "Hz"))
 
@@ -256,6 +261,7 @@ class MainWindow(QMainWindow):
         self.data_logger = data_logger
         self.history = History(len(config.cells))
         self.window_seconds: float | None = WINDOWS[0][1]
+        self._last_redraw = 0.0
 
         self.setWindowTitle(title)
         self.resize(1300, 900)
@@ -266,7 +272,7 @@ class MainWindow(QMainWindow):
         self.panels = []
         panels = QHBoxLayout()
         for i, cell in enumerate(config.cells):
-            panel = CellPanel(cell, COLORS[i % len(COLORS)])
+            panel = CellPanel(cell, COLORS[i % len(COLORS)], config.rate.window)
             panel.setpoint_requested.connect(
                 lambda v, i=i: self.acquisition.set_setpoint(i, v)
             )
@@ -291,6 +297,7 @@ class MainWindow(QMainWindow):
 
         self.temperature_plot.setLabel("left", "Temperature", units="°C")
         self.rate_plot.setLabel("left", "Rate (Å/s)")
+        self.rate_plot.getAxis("left").enableAutoSIPrefix(False)
 
         self.curves = {}
         for plot, fields in [
@@ -314,6 +321,17 @@ class MainWindow(QMainWindow):
                     pen=pg.mkPen(color, width=1, style=Qt.PenStyle.DashLine),
                     name=f"{cell.name} {'setpoint' if plot is self.temperature_plot else 'target'}",
                 )
+
+            if plot is self.rate_plot:
+                for i, cell in enumerate(config.cells):
+                    faint = pg.mkColor(COLORS[i % len(COLORS)])
+                    faint.setAlpha(70)
+                    curve = plot.plot(
+                        pen=pg.mkPen(faint, width=1),
+                        name=f"{cell.name} QCM rate",
+                    )
+                    curve.setZValue(-1)
+                    self.curves[(i, "qcm_rate")] = curve
 
         # Event log
         self.events = QPlainTextEdit()
@@ -410,6 +428,12 @@ class MainWindow(QMainWindow):
 
     def on_sample(self, sample: Sample) -> None:
         self.history.append(sample)
+        # Samples may arrive fast in an accelerated simulation.
+        now = time.monotonic()
+        if now - self._last_redraw < 0.2:
+            return
+        self._last_redraw = now
+
         for panel, cell in zip(self.panels, sample.cells):
             panel.update_values(cell)
         self._redraw()

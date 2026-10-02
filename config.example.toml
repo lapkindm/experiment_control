@@ -16,6 +16,13 @@ transport = "usb"         # "usb" or "serial"
 # vid = 0x10C4            # optional explicit USB IDs
 # pid = 0x83F5
 
+[rate]
+# The rate is the slope of a linear fit to the QCM thickness over the
+# last `window` seconds (the rate reported by the QCM is only logged).
+window = 30.0             # s; longer = less noise, more lag (~window/2)
+min_fraction = 0.5        # report a rate once data span this part of the window
+reset_threshold = 0.005   # kÅ; a larger thickness drop restarts the fit
+
 [simulation]
 enabled = false           # or start with --simulate
 speed = 1.0               # simulated seconds per real second
@@ -35,9 +42,9 @@ min_setpoint = 20.0       # °C, every setpoint write is clamped to this range,
 max_setpoint = 1000.0     # °C  including writes by the rate feedback
 
 [cells.feedback]
-kp = 25.0                 # °C per unit ln(target/rate): 10 % low rate -> +2.5 °C
-ki = 0.4                  # °C/s per unit ln(target/rate)
-filter_tau = 5.0          # s, low-pass on the measured rate
+kp = 2.0                  # °C per unit ln(target/rate)
+ki = 0.3                  # °C/s per unit ln(target/rate): 10 % low -> +1.8 °C/min
+filter_tau = 0.0          # s, extra low-pass on the rate (the fit already averages)
 max_slew = 10.0           # °C/min, maximum setpoint change by the feedback
 rate_floor = 0.02         # rates below this fraction of the target are clipped
 
@@ -52,8 +59,8 @@ min_setpoint = 20.0
 max_setpoint = 800.0
 
 [cells.feedback]
-kp = 25.0
-ki = 0.4
-filter_tau = 5.0
+kp = 2.0
+ki = 0.3
+filter_tau = 0.0
 max_slew = 10.0
 rate_floor = 0.02

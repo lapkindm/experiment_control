@@ -5,7 +5,9 @@ Each simulated cell has
 - a temperature following the setpoint with first-order lag
   (stand-in for the Eurotherm PID loop and the thermal mass of the cell),
 - an Arrhenius-like deposition rate  r = A * exp(-Ea / kB T),
-  low-pass filtered (QCM rate filter) and with multiplicative noise.
+- a QCM whose reported rate is low-pass filtered and has additive noise
+  (poor at low rates), and whose thickness has a small noise and is
+  rounded to 1 Å, as displayed by the SQM-160.
 
 The simulation advances on demand from the wall clock, multiplied by
 ``speed``, so it can run faster than real time for testing.
@@ -32,7 +34,8 @@ class _SimCell:
         activation_energy: float = 2.0,
         thermal_tau: float = 40.0,
         qcm_tau: float = 3.0,
-        noise: float = 0.02,
+        rate_noise: float = 0.05,
+        thickness_noise: float = 0.3,
     ) -> None:
         self.cell = cell
         self.temperature = 25.0
@@ -46,7 +49,8 @@ class _SimCell:
         self.activation_energy = activation_energy
         self.thermal_tau = thermal_tau
         self.qcm_tau = qcm_tau
-        self.noise = noise
+        self.rate_noise = rate_noise              # Å/s
+        self.thickness_noise = thickness_noise    # Å
 
         # Prefactor chosen so that the rate is 1 Å/s at the reference T.
         self.prefactor = math.exp(
@@ -111,7 +115,11 @@ class SimulatedChamber:
             cell.advance(dt)
 
     def measured_rate(self, cell: _SimCell) -> float:
-        return cell.filtered_rate * (1 + self._random.gauss(0, cell.noise))
+        return cell.filtered_rate + self._random.gauss(0, cell.rate_noise)
+
+    def measured_thickness(self, cell: _SimCell) -> float:
+        noise = self._random.gauss(0, cell.thickness_noise) / 1000.0
+        return cell.thickness + noise
 
 
 class SimulatedHeater:
@@ -159,7 +167,7 @@ class SimulatedQCM:
         return {
             c.cell.sensor: QCMChannel(
                 rate=round(self._chamber.measured_rate(c), 2),
-                thickness=round(c.thickness, 3),
+                thickness=round(self._chamber.measured_thickness(c), 3),
                 frequency=round(c.frequency, 3),
             )
             for c in self._chamber.cells

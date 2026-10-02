@@ -5,7 +5,9 @@ from pathlib import Path
 import pytest
 
 from expctl.acquisition import Acquisition
-from expctl.config import CellConfig, Config, SimulationConfig, load_config
+from expctl.config import (
+    CellConfig, Config, RateConfig, SimulationConfig, load_config,
+)
 from expctl.datalog import CsvLogger, columns
 from expctl.simulation import SimulatedChamber
 
@@ -23,6 +25,7 @@ def make_config(tmp_path, interval=0.02):
         interval=interval,
         reconnect_delay=0.05,
         log_directory=tmp_path,
+        rate=RateConfig(window=0.2),
         cells=cells,
         simulation=SimulationConfig(enabled=True, speed=1.0),
     )

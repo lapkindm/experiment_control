@@ -25,6 +25,7 @@ from .config import Config
 from .control import RateFeedback
 from .datalog import CsvLogger
 from .devices import Heater, HeaterReading, QCM, QCMChannel
+from .rate import ThicknessRate
 from .samples import CellSample, Sample
 
 log = logging.getLogger(__name__)
@@ -94,8 +95,8 @@ class Acquisition:
     data_logger
         CSV logger receiving every sample.
     time_scale
-        Simulated seconds per real second (only for the simulator, so the
-        feedback loop integrates in simulated time).
+        Simulated seconds per real second (only for the simulator). The
+        polling interval, rate fit and feedback then run in simulated time.
     """
 
     def __init__(
@@ -120,6 +121,7 @@ class Acquisition:
             RateFeedback(c.feedback, c.min_setpoint, c.max_setpoint)
             for c in config.cells
         ]
+        self._rate = [ThicknessRate(config.rate) for _ in config.cells]
         self._feedback_on = [False] * len(config.cells)
         self._written_setpoint = [math.nan] * len(config.cells)
 
@@ -173,7 +175,7 @@ class Acquisition:
     # ------------------------------------------------------------------
 
     def _run(self) -> None:
-        interval = self.config.interval
+        interval = self.config.interval / self.time_scale
         t0 = time.monotonic()
         next_time = t0
         previous = None
@@ -183,7 +185,7 @@ class Acquisition:
         try:
             while True:
                 now = time.monotonic()
-                sample = self._acquire(now - t0)
+                sample = self._acquire(now - t0, (now - t0) * self.time_scale)
 
                 if previous is not None:
                     self._run_feedback(sample, (now - previous) * self.time_scale)
@@ -241,7 +243,12 @@ class Acquisition:
             except Exception:
                 log.exception("Command %s%r failed.", fn.__name__, tuple(args))
 
-    def _acquire(self, elapsed: float) -> Sample:
+    def _acquire(self, elapsed: float, process_time: float) -> Sample:
+        """
+        ``process_time`` is ``elapsed`` in simulated time (equal to it on
+        the real hardware); the rate fit uses it.
+        """
+
         timestamp = time.time()
 
         qcm: dict[int, QCMChannel] = (
@@ -249,15 +256,25 @@ class Acquisition:
         )
 
         cells = []
-        for cell, link in zip(self.config.cells, self._heaters):
+        for cell, link, rate in zip(
+            self.config.cells, self._heaters, self._rate
+        ):
             heater: HeaterReading | None = link.call(lambda d: d.read())
             channel = qcm.get(cell.sensor)
 
             values = {}
             if heater is not None:
                 values.update(heater._asdict())
+
+            thickness = math.nan
             if channel is not None:
-                values.update(channel._asdict())
+                thickness = channel.thickness
+                values.update(
+                    qcm_rate=channel.rate,
+                    thickness=channel.thickness,
+                    frequency=channel.frequency,
+                )
+            values["rate"] = rate.update(process_time, thickness)
 
             cells.append(CellSample(**values))
 
