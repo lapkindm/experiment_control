@@ -46,8 +46,9 @@ every *Start logging*. Rows are flushed immediately.
 
 `logs/events.log` — setpoint changes, feedback on/off, device errors.
 
-Units are those of the instruments: °C, %, and for the SQM-160 in Angstrom
-display mode Å/s and kÅ.
+Units in the log are those of the instruments: °C, %, and for the SQM-160
+in Angstrom display mode Å/s and kÅ. The GUI shows rates in Å/min and
+thickness in Å; the target rate is entered in Å/min.
 
 ## Deposition rate
 

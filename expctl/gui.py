@@ -38,6 +38,18 @@ from .samples import CellSample, Sample
 
 COLORS = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e", "#8c564b"]
 
+# Internally (and in the log) the QCM units are used: rate in Å/s,
+# thickness in kÅ. The GUI shows rates in Å/min and thickness in Å.
+RATE_TO_DISPLAY = 60.0          # Å/s -> Å/min
+THICKNESS_TO_DISPLAY = 1000.0   # kÅ -> Å
+
+DISPLAY_SCALE = {
+    "rate": RATE_TO_DISPLAY,
+    "rate_target": RATE_TO_DISPLAY,
+    "qcm_rate": RATE_TO_DISPLAY,
+    "thickness": THICKNESS_TO_DISPLAY,
+}
+
 WINDOWS = [
     ("5 min", 300),
     ("30 min", 1800),
@@ -74,7 +86,8 @@ class QtLogHandler(logging.Handler):
 
 class History:
     """
-    Growable column store of the samples received so far.
+    Growable column store of the samples received so far, in display
+    units.
     """
 
     FIELDS = [
@@ -103,7 +116,9 @@ class History:
         self.time[self.size] = sample.timestamp
         for i, cell in enumerate(sample.cells):
             for f in self.FIELDS:
-                self.data[(i, f)][self.size] = getattr(cell, f)
+                self.data[(i, f)][self.size] = (
+                    getattr(cell, f) * DISPLAY_SCALE.get(f, 1.0)
+                )
         self.size += 1
 
     def view(self, since: float | None):
@@ -178,10 +193,10 @@ class CellPanel(QGroupBox):
 
         # Rate feedback control
         self.rate_input = QDoubleSpinBox()
-        self.rate_input.setRange(0.001, 1000.0)
-        self.rate_input.setDecimals(3)
-        self.rate_input.setValue(1.0)
-        self.rate_input.setSuffix(" Å/s")
+        self.rate_input.setRange(0.01, 60000.0)
+        self.rate_input.setDecimals(2)
+        self.rate_input.setValue(6.0)
+        self.rate_input.setSuffix(" Å/min")
         self.rate_input.setKeyboardTracking(False)
         self.rate_input.valueChanged.connect(self._rate_target_changed)
 
@@ -203,20 +218,26 @@ class CellPanel(QGroupBox):
         layout.addLayout(controls)
 
     def _feedback_clicked(self, checked: bool) -> None:
-        self.feedback_requested.emit(checked, self.rate_input.value())
+        self.feedback_requested.emit(
+            checked, self.rate_input.value() / RATE_TO_DISPLAY
+        )
 
     def _rate_target_changed(self, value: float) -> None:
         if self.feedback_button.isChecked():
-            self.feedback_requested.emit(True, value)
+            self.feedback_requested.emit(True, value / RATE_TO_DISPLAY)
 
     def update_values(self, cell: CellSample) -> None:
         self.temperature.setText(_fmt(cell.temperature, ".1f", "°C"))
-        self.rate.setText(_fmt(cell.rate, ".3f", "Å/s"))
+        self.rate.setText(_fmt(cell.rate * RATE_TO_DISPLAY, ".2f", "Å/min"))
         self.setpoint.setText(_fmt(cell.target_setpoint, ".1f", "°C"))
         self.working_setpoint.setText(_fmt(cell.working_setpoint, ".1f", "°C"))
         self.output.setText(_fmt(cell.output, ".1f", "%"))
-        self.qcm_rate.setText(_fmt(cell.qcm_rate, ".2f", "Å/s"))
-        self.thickness.setText(_fmt(cell.thickness, ".3f", "kÅ"))
+        self.qcm_rate.setText(
+            _fmt(cell.qcm_rate * RATE_TO_DISPLAY, ".1f", "Å/min")
+        )
+        self.thickness.setText(
+            _fmt(cell.thickness * THICKNESS_TO_DISPLAY, ".0f", "Å")
+        )
         self.frequency.setText(_fmt(cell.frequency / 1e6, ".6f", "MHz"))
 
         # Show the controller's setpoint unless the user is editing it.
@@ -297,9 +318,9 @@ class MainWindow(QMainWindow):
         self.thickness_plot.setXLink(self.temperature_plot)
 
         self.temperature_plot.setLabel("left", "Temperature", units="°C")
-        self.rate_plot.setLabel("left", "Rate (Å/s)")
+        self.rate_plot.setLabel("left", "Rate (Å/min)")
         self.rate_plot.getAxis("left").enableAutoSIPrefix(False)
-        self.thickness_plot.setLabel("left", "Thickness (kÅ)")
+        self.thickness_plot.setLabel("left", "Thickness (Å)")
         self.thickness_plot.getAxis("left").enableAutoSIPrefix(False)
 
         self.curves = {}

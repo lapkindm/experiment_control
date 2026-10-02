@@ -330,7 +330,9 @@ class Acquisition:
 
         if self._feedback_on[index]:
             fb.target = target
-            log.info("%s: rate target changed to %.3g Å/s.", cell.name, target)
+            log.info(
+                "%s: rate target changed to %.3g Å/min.", cell.name, target * 60
+            )
             return
 
         setpoint = math.nan
@@ -348,8 +350,8 @@ class Acquisition:
         self._feedback_on[index] = True
         self._written_setpoint[index] = setpoint
         log.info(
-            "%s: rate feedback ON, target %.3g Å/s, starting from %.1f °C.",
-            cell.name, target, setpoint,
+            "%s: rate feedback ON, target %.3g Å/min, starting from %.1f °C.",
+            cell.name, target * 60, setpoint,
         )
 
     def _do_disable_feedback(self, index: int) -> None:

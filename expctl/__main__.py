@@ -67,7 +67,8 @@ def _status_line(config: Config, sample: Sample) -> str:
         parts.append(
             f"{cell.name}: T={f(values.temperature, '.1f')} °C "
             f"SP={f(values.target_setpoint, '.1f')} °C "
-            f"rate={f(values.rate, '.2f')} Å/s"
+            f"rate={f(values.rate * 60, '.2f')} Å/min "
+            f"d={f(values.thickness * 1000, '.0f')} Å"
         )
     return " | ".join(parts)
 
