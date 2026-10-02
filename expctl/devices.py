@@ -73,19 +73,18 @@ class EurothermHeater:
                 f"expected one of {sorted(classes)}."
             ) from None
 
+        # We are the only user of the port: keep it open instead of
+        # reopening it for every Modbus transaction.
         kwargs = dict(
             port=self.cell.port,
             address=self.cell.address,
             timeout=self.cell.timeout,
+            keep_open=True,
         )
         if self.cell.baudrate is not None:
             kwargs["baudrate"] = self.cell.baudrate
 
         controller = cls(**kwargs)
-
-        # We are the only user of the port: keep it open instead of
-        # reopening it for every Modbus transaction.
-        controller.transport.instrument.close_port_after_each_call = False
 
         if not controller.ping():
             controller.close()
