@@ -386,6 +386,10 @@ def test_reset_zeroes_thickness_and_time(tmp_path):
     after = collect.samples[i + 1]
     assert sum(s.reset for s in collect.samples) == 1
     assert after.elapsed < 2 * config.interval
+    # The time since start keeps running through the reset.
+    since = [s.since_start for s in collect.samples]
+    assert all(b > a for a, b in zip(since, since[1:]))
+    assert after.since_start > before.since_start
     assert all(abs(c.thickness) < 0.002 for c in after.cells)
     # The rate fit starts over (no fake negative rate from the jump).
     assert all(c.rate != c.rate for c in after.cells)

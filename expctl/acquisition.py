@@ -343,16 +343,19 @@ class Acquisition:
         try:
             while True:
                 now = time.monotonic()
+                scale = self.time_scale
                 sample = self._acquire(
-                    now - self._elapsed_t0, deadline=now + 0.9 * interval
+                    (now - self._elapsed_t0) * scale,
+                    deadline=now + 0.9 * interval,
                 )
+                sample = replace(sample, since_start=(now - t0) * scale)
 
                 # After _acquire: a reading started before the reset is
                 # consumed by now, so the rate fits restart cleanly.
                 if self._check_reset():
                     sample = replace(
                         sample,
-                        elapsed=max(0.0, now - self._elapsed_t0),
+                        elapsed=max(0.0, now - self._elapsed_t0) * scale,
                         reset=True,
                     )
 

@@ -30,3 +30,6 @@ class Sample:
     elapsed: float                 # s since acquisition start or last reset
     cells: list[CellSample] = field(default_factory=list)
     reset: bool = False            # first sample after a thickness/time reset
+    since_start: float = 0.0       # s since acquisition start, continuous
+
+    # elapsed and since_start are in simulated time when simulating.

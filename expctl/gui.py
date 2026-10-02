@@ -70,6 +70,53 @@ class QtLogHandler(logging.Handler):
 
 
 # ----------------------------------------------------------------------
+# Time axis
+# ----------------------------------------------------------------------
+
+def format_duration(seconds: float, decimals: int = 0) -> str:
+    """
+    Format seconds as [-]h:mm:ss (or m:ss below one hour).
+    """
+
+    sign = "-" if seconds < 0 else ""
+    seconds = round(abs(seconds), decimals)
+    hours, rest = divmod(seconds, 3600)
+    minutes, secs = divmod(rest, 60)
+    width = 3 + decimals if decimals else 2
+    secs = f"{secs:0{width}.{decimals}f}"
+    if hours:
+        return f"{sign}{int(hours)}:{int(minutes):02d}:{secs}"
+    return f"{sign}{int(minutes)}:{secs}"
+
+
+class ElapsedAxis(pg.AxisItem):
+    """
+    Time axis in h:mm:ss with ticks at round time steps.
+    """
+
+    STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800,
+             3600, 7200, 10800, 21600, 43200, 86400]
+
+    def tickSpacing(self, minVal, maxVal, size):
+        span = maxVal - minVal
+        if span <= 0 or size <= 0:
+            return super().tickSpacing(minVal, maxVal, size)
+
+        # At most one labelled tick per ~90 px.
+        wanted = span / max(size / 90.0, 1.0)
+        major = next((s for s in self.STEPS if s >= wanted), self.STEPS[-1])
+        minor = next(
+            (s for s in reversed(self.STEPS) if s < major and major % s == 0
+             and major / s <= 6),
+            major / 5,
+        )
+        return [(major, 0), (minor, 0)]
+
+    def tickStrings(self, values, scale, spacing):
+        return [format_duration(v) for v in values]
+
+
+# ----------------------------------------------------------------------
 # History buffer
 # ----------------------------------------------------------------------
 
@@ -102,7 +149,7 @@ class History:
             for key, array in self.data.items():
                 self.data[key] = np.resize(array, self._capacity)
 
-        self.time[self.size] = sample.timestamp
+        self.time[self.size] = sample.since_start
         for i, cell in enumerate(sample.cells):
             for f in self.FIELDS:
                 self.data[(i, f)][self.size] = (
@@ -112,7 +159,7 @@ class History:
 
     def view(self, since: float | None):
         """
-        Return (time, data) for samples newer than ``since``.
+        Return (time since start, data) for samples newer than ``since``.
         """
 
         start = 0
@@ -269,6 +316,10 @@ class MainWindow(QMainWindow):
         self.history = History(len(config.cells))
         self.window_seconds: float | None = WINDOWS[0][1]
         self._last_redraw = 0.0
+        # Time since start of the last reset (or the start): x = 0.
+        self._reference = 0.0
+        self._latest = 0.0
+        self._reset_lines: list[tuple[float, pg.InfiniteLine]] = []
 
         self.setWindowTitle(title)
         self.resize(1300, 1000)
@@ -295,13 +346,13 @@ class MainWindow(QMainWindow):
         plots.setBackground("w")
 
         self.temperature_plot = plots.addPlot(
-            row=0, col=0, axisItems={"bottom": pg.DateAxisItem()}
+            row=0, col=0, axisItems={"bottom": ElapsedAxis("bottom")}
         )
         self.rate_plot = plots.addPlot(
-            row=1, col=0, axisItems={"bottom": pg.DateAxisItem()}
+            row=1, col=0, axisItems={"bottom": ElapsedAxis("bottom")}
         )
         self.thickness_plot = plots.addPlot(
-            row=2, col=0, axisItems={"bottom": pg.DateAxisItem()}
+            row=2, col=0, axisItems={"bottom": ElapsedAxis("bottom")}
         )
         self.rate_plot.setXLink(self.temperature_plot)
         self.thickness_plot.setXLink(self.temperature_plot)
@@ -310,6 +361,7 @@ class MainWindow(QMainWindow):
         self.rate_plot.setLabel("left", "Rate (Å/min)")
         self.rate_plot.getAxis("left").enableAutoSIPrefix(False)
         self.thickness_plot.setLabel("left", "Thickness (Å)")
+        self.thickness_plot.setLabel("bottom", "Time since reset (h:mm:ss)")
         self.thickness_plot.getAxis("left").enableAutoSIPrefix(False)
 
         self.curves = {}
@@ -407,6 +459,18 @@ class MainWindow(QMainWindow):
         )
         toolbar.addWidget(spacer)
 
+        caption = QLabel("Time since reset: ")
+        caption.setStyleSheet("color: gray;")
+        toolbar.addWidget(caption)
+        self.elapsed_label = QLabel("—")
+        font = QFont()
+        font.setPointSize(15)
+        font.setBold(True)
+        self.elapsed_label.setFont(font)
+        self.elapsed_label.setMinimumWidth(130)
+        toolbar.addWidget(self.elapsed_label)
+        toolbar.addSeparator()
+
         toolbar.addWidget(QLabel("Plot window: "))
         self.window_box = QComboBox()
         for label, _ in WINDOWS:
@@ -463,24 +527,27 @@ class MainWindow(QMainWindow):
 
     def on_sample(self, sample: Sample) -> None:
         self.history.append(sample)
+        self._latest = sample.since_start
+        self._reference = sample.since_start - sample.elapsed
 
         if sample.reset:
             for plot in (self.temperature_plot, self.rate_plot, self.thickness_plot):
-                plot.addItem(
-                    pg.InfiniteLine(
-                        pos=sample.timestamp,
-                        angle=90,
-                        pen=pg.mkPen("#757575", width=1, style=Qt.PenStyle.DotLine),
-                        label="reset" if plot is self.temperature_plot else None,
-                        labelOpts={"position": 0.95, "color": "#757575"},
-                    )
+                line = pg.InfiniteLine(
+                    angle=90,
+                    pen=pg.mkPen("#757575", width=1, style=Qt.PenStyle.DotLine),
+                    label="reset" if plot is self.temperature_plot else None,
+                    labelOpts={"position": 0.95, "color": "#757575"},
                 )
+                plot.addItem(line)
+                self._reset_lines.append((self._reference, line))
+
         # Samples may arrive fast in an accelerated simulation.
         now = time.monotonic()
         if now - self._last_redraw < 0.2:
             return
         self._last_redraw = now
 
+        self.elapsed_label.setText(format_duration(sample.elapsed))
         for panel, cell in zip(self.panels, sample.cells):
             panel.update_values(cell)
         self._redraw()
@@ -501,18 +568,23 @@ class MainWindow(QMainWindow):
 
         since = None
         if self.window_seconds is not None:
-            since = time.time() - self.window_seconds
+            since = self._latest - self.window_seconds
 
+        # x = time relative to the last reset (earlier data is negative).
         t, data = self.history.view(since)
+        x = t - self._reference
         for key, curve in self.curves.items():
-            curve.setData(t, data[key], connect="finite")
+            curve.setData(x, data[key], connect="finite")
+
+        for position, line in self._reset_lines:
+            line.setPos(position - self._reference)
 
         if self.window_seconds is None:
             self.temperature_plot.enableAutoRange(x=True)
         else:
-            now = time.time()
+            end = self._latest - self._reference
             self.temperature_plot.setXRange(
-                now - self.window_seconds, now, padding=0
+                end - self.window_seconds, end, padding=0
             )
         for plot in (self.temperature_plot, self.rate_plot, self.thickness_plot):
             plot.enableAutoRange(y=True)
