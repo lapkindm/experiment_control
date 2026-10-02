@@ -73,7 +73,8 @@ The QCM and the Eurotherms occasionally do not answer a request. Handling
 The SQM-160 driver discards stale input before each command, so a reply
 that arrives after its timeout cannot be taken for the next answer (the
 Eurotherm Modbus driver does this already). Request timeouts are set by
-`timeout` in `[qcm]` and `[[cells]]` (default 1 s).
+`timeout` in `[qcm]` (default 1 s) and `[[cells]]` (Eurotherm, default
+0.3 s, so a retry still fits into one 0.5 s interval).
 
 Test without hardware: `expctl config.toml --simulate --failure-rate 0.2`.
 

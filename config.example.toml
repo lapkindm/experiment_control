@@ -43,7 +43,7 @@ model = "2408"            # Eurotherm model: "2408" or "3508"
 port = "/dev/ttyUSB0"
 address = 1               # Modbus address
 # baudrate = 9600         # default: 9600 (2408), 19200 (3508)
-# timeout = 1.0           # s per Modbus request
+timeout = 0.3             # s per Modbus request
 min_setpoint = 20.0       # °C, every setpoint write is clamped to this range,
 max_setpoint = 1000.0     # °C  including writes by the rate feedback
 
@@ -61,6 +61,7 @@ sensor = 2
 model = "3508"
 port = "/dev/ttyUSB1"
 address = 1
+timeout = 0.3
 min_setpoint = 20.0
 max_setpoint = 800.0
 

@@ -55,7 +55,7 @@ class CellConfig:
     port: str
     address: int = 1
     baudrate: int | None = None  # None: driver default for the model
-    timeout: float = 1.0
+    timeout: float = 0.3         # s per Modbus request
     min_setpoint: float = 0.0
     max_setpoint: float = 1000.0
     feedback: FeedbackConfig = field(default_factory=FeedbackConfig)
