@@ -361,7 +361,7 @@ class MainWindow(QMainWindow):
         self.rate_plot.setLabel("left", "Rate (Å/min)")
         self.rate_plot.getAxis("left").enableAutoSIPrefix(False)
         self.thickness_plot.setLabel("left", "Thickness (Å)")
-        self.thickness_plot.setLabel("bottom", "Time since reset (h:mm:ss)")
+        self.thickness_plot.setLabel("bottom", "Elapsed time (h:mm:ss)")
         self.thickness_plot.getAxis("left").enableAutoSIPrefix(False)
 
         self.curves = {}
@@ -459,7 +459,7 @@ class MainWindow(QMainWindow):
         )
         toolbar.addWidget(spacer)
 
-        caption = QLabel("Time since reset: ")
+        caption = QLabel("Elapsed time: ")
         caption.setStyleSheet("color: gray;")
         toolbar.addWidget(caption)
         self.elapsed_label = QLabel("—")

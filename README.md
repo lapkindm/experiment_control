@@ -39,9 +39,9 @@ SQM-160 thickness readings and deposition timer (commands `S` and `T`),
 restarts the rate fits and restarts `elapsed_s` in the log; the plots mark
 it with a dotted line.
 
-The plots are against the time since the last reset (or the start), in
-h:mm:ss; data from before a reset stays visible at negative times. The
-toolbar shows the current time since reset. When simulating, these times
+The plots are against the elapsed time, i.e. the time since the last reset
+(or the start), in h:mm:ss; data from before a reset stays visible at
+negative times. The toolbar shows the current elapsed time. When simulating, these times
 are simulated time.
 
 Closing the program leaves the Eurotherms at their current setpoints.
