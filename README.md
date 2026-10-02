@@ -36,6 +36,17 @@ clamped to `min_setpoint`/`max_setpoint` of that cell.
 
 Closing the program leaves the Eurotherms at their current setpoints.
 
+## Threads
+
+Each instrument has its own worker thread; it is the only thread that uses
+the instrument's port (reads, setpoint writes, open/close). Every
+`interval` the acquisition thread asks all workers to read in parallel
+and waits until shortly before the next tick. An instrument that is slow
+or retrying does not delay the others or the clock: it contributes empty
+values to that sample, is not asked again until it answers, and its late
+reading goes into the next sample (the rate fit uses the time of the
+reading).
+
 ## Unreliable communication
 
 The QCM and the Eurotherms occasionally do not answer a request. Handling
@@ -119,7 +130,7 @@ they settle within ±5 % in 5–9 min for 0.05–1 Å/s, overshoot ≤ 4 %. Retu
 | `config.py` | TOML configuration |
 | `devices.py` | adapters around the drivers (`Heater`, `QCM` interfaces) |
 | `simulation.py` | simulated chamber implementing the same interfaces |
-| `acquisition.py` | background thread: owns all devices, polls, runs feedback, reconnects after errors; GUI requests go through a queue |
+| `acquisition.py` | one worker thread per instrument (the only thread using its port) + acquisition thread: clock, rate, feedback, logging; GUI requests go through a queue |
 | `rate.py` | rate from a linear fit to the thickness |
 | `control.py` | rate feedback controller |
 | `datalog.py` | CSV logger |

@@ -266,3 +266,93 @@ def test_feedback_survives_sporadic_failures(tmp_path):
     assert 0 < missing < 0.08 * len(after)
     # The rate is ~0 at 400 °C, so the feedback keeps raising the setpoint.
     assert after[-1].cells[1].target_setpoint > 400.0
+
+
+class ThreadRecorder:
+    """
+    Wraps a device, records which thread each call runs on; optionally slow.
+    """
+
+    def __init__(self, device, delay=0.0):
+        self.device = device
+        self.name = device.name
+        self.delay = delay
+        self.threads = set()
+
+    def _record(self):
+        self.threads.add(threading.current_thread().name)
+        if self.delay:
+            import time
+            time.sleep(self.delay)
+
+    def open(self):
+        self.threads.add(threading.current_thread().name)
+        self.device.open()
+
+    def close(self):
+        self.threads.add(threading.current_thread().name)
+        self.device.close()
+
+    def read(self):
+        self._record()
+        return self.device.read()
+
+    def set_setpoint(self, value):
+        self._record()
+        self.device.set_setpoint(value)
+
+
+def test_each_device_on_its_own_thread(tmp_path):
+    config = make_config(tmp_path)
+    chamber = SimulatedChamber(config.cells, config.simulation, seed=0)
+    devices = [ThreadRecorder(d) for d in [*chamber.heaters, chamber.qcm]]
+    acq = Acquisition(config, devices[:2], devices[2])
+    collect = Collector()
+    acq.add_listener(collect)
+
+    acq.start()
+    try:
+        collect.wait_for(lambda s: len(s) >= 3)
+        acq.set_setpoint(0, 300.0)
+        acq.set_setpoint(1, 200.0)
+        collect.wait_for(
+            lambda s: s[-1].cells[0].target_setpoint == 300.0
+            and s[-1].cells[1].target_setpoint == 200.0
+        )
+    finally:
+        acq.stop()
+
+    # One thread per device (including open/close and writes), all
+    # different, none of them the acquisition thread.
+    threads = [d.threads for d in devices]
+    assert all(len(t) == 1 for t in threads)
+    assert len(set.union(*threads)) == 3
+    assert "acquisition" not in set.union(*threads)
+
+
+def test_slow_device_does_not_delay_others(tmp_path):
+    interval = 0.05
+    config = make_config(tmp_path, interval=interval)
+    chamber = SimulatedChamber(config.cells, config.simulation, seed=0)
+    slow = ThreadRecorder(chamber.heaters[0], delay=6 * interval)
+    acq = Acquisition(config, [slow, chamber.heaters[1]], chamber.qcm)
+    collect = Collector()
+    acq.add_listener(collect)
+
+    acq.start()
+    try:
+        collect.wait_for(lambda s: len(s) >= 40, timeout=10)
+    finally:
+        acq.stop()
+
+    samples = collect.samples[1:]
+    period = (samples[-1].elapsed - samples[0].elapsed) / (len(samples) - 1)
+    assert period == pytest.approx(interval, rel=0.2)
+
+    def present(values):
+        return sum(v == v for v in values)
+
+    # The other devices answer every time, the slow one now and then.
+    assert present(s.cells[1].temperature for s in samples) == len(samples)
+    assert present(s.cells[1].thickness for s in samples) == len(samples)
+    assert 0 < present(s.cells[0].temperature for s in samples) < len(samples) / 3

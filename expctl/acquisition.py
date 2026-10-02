@@ -1,14 +1,21 @@
 """
 Acquisition loop.
 
-A single background thread owns all instruments. It polls them at a fixed
-interval, runs the rate feedback, writes the log and notifies listeners.
-Requests from the GUI (setpoint changes, feedback on/off) are passed
-through a queue and executed by the same thread, so no two threads ever
-talk to the same serial port.
+Each instrument has its own worker thread, which is the only thread that
+talks to its port (reads, setpoint writes, open/close). The acquisition
+thread keeps the clock: every ``interval`` it asks all workers to read in
+parallel and waits for them until shortly before the next tick. A device
+that has not answered by then contributes NaN to that sample and does not
+delay the others; it is not asked again until it answers, and its late
+reading goes into the next sample.
 
-Devices that fail are closed and reopened after ``reconnect_delay``; in
-the meantime their values are NaN and the remaining devices keep working.
+The acquisition thread then computes the rate, runs the rate feedback,
+writes the log and notifies listeners. Requests from the GUI (setpoint
+changes, feedback on/off) are passed through a queue and executed by the
+acquisition thread; setpoint writes are handed to the heater's worker.
+
+Devices that fail repeatedly are closed and reopened after
+``reconnect_delay`` (see ``_Link``).
 """
 
 from __future__ import annotations
@@ -18,6 +25,7 @@ import math
 import queue
 import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import replace
 from typing import Callable
 
@@ -43,6 +51,8 @@ class _Link:
     reported as missed (None) but the device stays open. Only after
     ``max_missed`` consecutive missed requests is the device closed and
     reopened, every ``reconnect_delay`` seconds.
+
+    Used only from the device's worker thread.
     """
 
     STATS_INTERVAL = 600.0      # s between retry/miss summaries in the log
@@ -53,15 +63,14 @@ class _Link:
         reconnect_delay: float,
         retries: int,
         max_missed: int,
-        on_disconnect: Callable[[], None] | None = None,
     ) -> None:
         self.device = device
         self.reconnect_delay = reconnect_delay
         self.retries = retries
         self.max_missed = max_missed
-        self.on_disconnect = on_disconnect
 
         self.connected = False
+        self.disconnects = 0            # times a connection was lost
         self.missed = 0                 # consecutive missed requests
         self._next_attempt = 0.0
 
@@ -151,8 +160,8 @@ class _Link:
         self.missed = 0
         self._next_attempt = time.monotonic() + self.reconnect_delay
 
-        if was_connected and self.on_disconnect is not None:
-            self.on_disconnect()
+        if was_connected:
+            self.disconnects += 1
 
     def _log_stats(self) -> None:
         now = time.monotonic()
@@ -168,6 +177,36 @@ class _Link:
             )
         self._requests = self._retried = self._missed_total = 0
         self._stats_since = now
+
+
+class _Worker:
+    """
+    Thread owning one device; executes its jobs one at a time.
+    """
+
+    def __init__(self, link: _Link) -> None:
+        self.link = link
+        self._executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix=link.device.name
+        )
+        # Read in progress, possibly from an earlier tick.
+        self.read: Future | None = None
+
+    def submit(self, fn: Callable) -> Future:
+        """
+        Run ``fn(device)`` with retries on the worker thread. The future
+        gives ``(time.monotonic() when finished, result or None)``.
+        """
+
+        def job():
+            result = self.link.call(fn)
+            return time.monotonic(), result
+
+        return self._executor.submit(job)
+
+    def shutdown(self) -> None:
+        self._executor.submit(self.link.close)
+        self._executor.shutdown(wait=True)
 
 
 class Acquisition:
@@ -202,20 +241,18 @@ class Acquisition:
         self.data_logger = data_logger
         self.time_scale = time_scale
 
-        def link(device, on_disconnect=None):
-            return _Link(
-                device,
-                reconnect_delay=config.reconnect_delay,
-                retries=config.retries,
-                max_missed=config.max_missed,
-                on_disconnect=on_disconnect,
+        def worker(device):
+            return _Worker(
+                _Link(
+                    device,
+                    reconnect_delay=config.reconnect_delay,
+                    retries=config.retries,
+                    max_missed=config.max_missed,
+                )
             )
 
-        self._heaters = [
-            link(h, lambda i=i: self._heater_disconnected(i))
-            for i, h in enumerate(heaters)
-        ]
-        self._qcm = link(qcm)
+        self._heaters = [worker(h) for h in heaters]
+        self._qcm = worker(qcm)
 
         self._feedback = [
             RateFeedback(c.feedback, c.min_setpoint, c.max_setpoint)
@@ -226,6 +263,15 @@ class Acquisition:
         self._written_setpoint = [math.nan] * len(config.cells)
         # Setpoint waiting to be acknowledged by the controller, or NaN.
         self._pending_setpoint = [math.nan] * len(config.cells)
+        # Whether the pending setpoint was set by the user, and whether a
+        # "not acknowledged" warning was given for it (for logging).
+        self._pending_manual = [False] * len(config.cells)
+        self._pending_warned = [False] * len(config.cells)
+        # Setpoint write in progress: (future, value) or None.
+        self._writing: list[tuple[Future, float] | None] = (
+            [None] * len(config.cells)
+        )
+        self._disconnects = [0] * len(config.cells)
         self._t0 = 0.0
 
         self._listeners: list[Callable[[Sample], None]] = []
@@ -288,7 +334,9 @@ class Acquisition:
         try:
             while True:
                 now = time.monotonic()
-                sample = self._acquire(now - t0)
+                sample = self._acquire(now - t0, deadline=now + 0.9 * interval)
+
+                self._check_heaters()
 
                 if previous is not None:
                     self._run_feedback(sample, (now - previous) * self.time_scale)
@@ -324,8 +372,11 @@ class Acquisition:
             log.exception("Acquisition loop crashed.")
 
         finally:
-            for link in [*self._heaters, self._qcm]:
-                link.close()
+            for worker in [*self._heaters, self._qcm]:
+                try:
+                    worker.shutdown()
+                except Exception:
+                    log.exception("Stopping %s failed.", worker.link.device.name)
             log.info("Acquisition stopped.")
 
     def _process_commands(self, until: float) -> bool:
@@ -349,22 +400,44 @@ class Acquisition:
             except Exception:
                 log.exception("Command %s%r failed.", fn.__name__, tuple(args))
 
-    def _acquire(self, elapsed: float) -> Sample:
+    def _acquire(self, elapsed: float, deadline: float) -> Sample:
+        """
+        Read all devices in parallel; give up on those that have not
+        answered by ``deadline``.
+        """
+
         timestamp = time.time()
 
-        qcm: dict[int, QCMChannel] = (
-            self._qcm.call(lambda d: d.read()) or {}
+        workers = [self._qcm, *self._heaters]
+        for worker in workers:
+            if worker.read is None:
+                worker.read = worker.submit(lambda d: d.read())
+
+        wait(
+            [worker.read for worker in workers],
+            timeout=max(0.0, deadline - time.monotonic()),
         )
 
-        # Time of the thickness reading for the rate fit (after possible
-        # retries; in simulated time when simulating).
-        qcm_time = (time.monotonic() - self._t0) * self.time_scale
+        results = []
+        for worker in workers:
+            if worker.read.done():
+                results.append(worker.read.result())
+                worker.read = None
+            else:
+                results.append((math.nan, None))
+
+        (qcm_finished, qcm), *heaters = results
+        qcm: dict[int, QCMChannel] = qcm or {}
+
+        # Time of the thickness reading for the rate fit (in simulated
+        # time when simulating).
+        qcm_time = (qcm_finished - self._t0) * self.time_scale
 
         cells = []
-        for cell, link, rate in zip(
-            self.config.cells, self._heaters, self._rate
+        for cell, (_, heater), rate in zip(
+            self.config.cells, heaters, self._rate
         ):
-            heater: HeaterReading | None = link.call(lambda d: d.read())
+            heater: HeaterReading | None
             channel = qcm.get(cell.sensor)
 
             values = {}
@@ -413,23 +486,63 @@ class Acquisition:
             )
 
         self._pending_setpoint[index] = round(clamped, 1)
+        self._pending_warned[index] = False
         return self._pending_setpoint[index]
 
-    def _send_pending_setpoint(self, index: int) -> bool:
+    def _send_pending_setpoint(self, index: int) -> None:
         """
-        Write the pending setpoint. If the controller does not acknowledge
-        it, it stays pending and is retried on the next cycle.
+        Hand the pending setpoint to the heater's worker, unless a write
+        is already in progress.
         """
 
         value = self._pending_setpoint[index]
-        if math.isnan(value):
-            return True
+        if math.isnan(value) or self._writing[index] is not None:
+            return
 
-        ok = self._heaters[index].call(lambda d: d.set_setpoint(value) or True)
-        if ok:
-            self._written_setpoint[index] = value
-            self._pending_setpoint[index] = math.nan
-        return bool(ok)
+        future = self._heaters[index].submit(
+            lambda d: d.set_setpoint(value) or True
+        )
+        self._writing[index] = (future, value)
+
+    def _check_heaters(self) -> None:
+        """
+        Collect finished setpoint writes and handle lost connections.
+        """
+
+        for index, worker in enumerate(self._heaters):
+            cell = self.config.cells[index]
+
+            writing = self._writing[index]
+            if writing is not None and writing[0].done():
+                self._writing[index] = None
+                future, value = writing
+                _, ok = future.result()
+
+                if ok:
+                    self._written_setpoint[index] = value
+                    if self._pending_setpoint[index] == value:
+                        self._pending_setpoint[index] = math.nan
+                        if self._pending_manual[index]:
+                            log.info(
+                                "%s: setpoint set to %.1f °C.", cell.name, value
+                            )
+                elif (
+                    self._pending_manual[index]
+                    and not self._pending_warned[index]
+                    and self._pending_setpoint[index] == value
+                    and worker.link.connected
+                ):
+                    self._pending_warned[index] = True
+                    log.warning(
+                        "%s: setpoint %.1f °C not acknowledged yet, retrying.",
+                        cell.name, value,
+                    )
+
+            # Reading ``disconnects`` from this thread is safe: it is an
+            # int only ever incremented by the worker.
+            if worker.link.disconnects != self._disconnects[index]:
+                self._disconnects[index] = worker.link.disconnects
+                self._heater_disconnected(index)
 
     def _heater_disconnected(self, index: int) -> None:
         cell = self.config.cells[index]
@@ -450,19 +563,12 @@ class Acquisition:
         self._written_setpoint[index] = math.nan
 
     def _do_set_setpoint(self, index: int, value: float) -> None:
-        cell = self.config.cells[index]
-
         if self._feedback_on[index]:
             self._do_disable_feedback(index)
 
-        value = self._request_setpoint(index, value)
-        if self._send_pending_setpoint(index):
-            log.info("%s: setpoint set to %.1f °C.", cell.name, value)
-        elif self._heaters[index].connected:
-            log.warning(
-                "%s: setpoint %.1f °C not acknowledged yet, retrying.",
-                cell.name, value,
-            )
+        self._request_setpoint(index, value)
+        self._pending_manual[index] = True
+        self._send_pending_setpoint(index)
 
     def _do_enable_feedback(self, index: int, target: float) -> None:
         cell = self.config.cells[index]
@@ -495,6 +601,7 @@ class Acquisition:
         self._feedback_on[index] = True
         self._written_setpoint[index] = setpoint
         self._pending_setpoint[index] = math.nan
+        self._pending_manual[index] = False
         log.info(
             "%s: rate feedback ON, target %.3g Å/min, starting from %.1f °C.",
             cell.name, target * RATE_TO_DISPLAY, setpoint,
@@ -525,3 +632,4 @@ class Acquisition:
                 continue
 
             self._request_setpoint(index, setpoint)
+            self._pending_manual[index] = False

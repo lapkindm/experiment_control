@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import math
 import random
+import threading
 import time
 from typing import Callable
 
@@ -99,6 +100,8 @@ class SimulatedChamber:
         self._failures = random.Random(None if seed is None else seed + 1)
         self._clock = clock
         self._last = clock()
+        # The simulated devices are used from several worker threads.
+        self.lock = threading.RLock()
 
         # Reference temperatures (1 Å/s) for the simulated materials.
         references = [800.0, 500.0, 650.0, 950.0, 400.0, 1100.0]
@@ -149,19 +152,21 @@ class SimulatedHeater:
         pass
 
     def read(self) -> HeaterReading:
-        self._chamber.request()
-        c = self._cell
-        return HeaterReading(
-            temperature=round(c.temperature, 1),
-            target_setpoint=round(c.setpoint, 1),
-            working_setpoint=round(c.setpoint, 1),
-            output=round(c.output, 1),
-        )
+        with self._chamber.lock:
+            self._chamber.request()
+            c = self._cell
+            return HeaterReading(
+                temperature=round(c.temperature, 1),
+                target_setpoint=round(c.setpoint, 1),
+                working_setpoint=round(c.setpoint, 1),
+                output=round(c.output, 1),
+            )
 
     def set_setpoint(self, value: float) -> None:
-        self._chamber.request()
-        # The real controller stores one decimal.
-        self._cell.setpoint = round(value, 1)
+        with self._chamber.lock:
+            self._chamber.request()
+            # The real controller stores one decimal.
+            self._cell.setpoint = round(value, 1)
 
 
 class SimulatedQCM:
@@ -177,12 +182,13 @@ class SimulatedQCM:
         pass
 
     def read(self) -> dict[int, QCMChannel]:
-        self._chamber.request()
-        return {
-            c.cell.sensor: QCMChannel(
-                rate=round(self._chamber.measured_rate(c), 2),
-                thickness=round(self._chamber.measured_thickness(c), 3),
-                frequency=round(c.frequency, 3),
-            )
-            for c in self._chamber.cells
-        }
+        with self._chamber.lock:
+            self._chamber.request()
+            return {
+                c.cell.sensor: QCMChannel(
+                    rate=round(self._chamber.measured_rate(c), 2),
+                    thickness=round(self._chamber.measured_thickness(c), 3),
+                    frequency=round(c.frequency, 3),
+                )
+                for c in self._chamber.cells
+            }
