@@ -342,70 +342,75 @@ class MainWindow(QMainWindow):
             panels.addWidget(panel)
             self.panels.append(panel)
 
-        # Plots
+        # Plots: one column per cell (temperature, rate, thickness), all
+        # sharing the time axis.
         pg.setConfigOptions(antialias=True)
         plots = pg.GraphicsLayoutWidget()
         plots.setBackground("w")
 
-        self.temperature_plot = plots.addPlot(
-            row=0, col=0, axisItems={"bottom": ElapsedAxis("bottom")}
-        )
-        self.rate_plot = plots.addPlot(
-            row=1, col=0, axisItems={"bottom": ElapsedAxis("bottom")}
-        )
-        self.thickness_plot = plots.addPlot(
-            row=2, col=0, axisItems={"bottom": ElapsedAxis("bottom")}
-        )
-        self.rate_plot.setXLink(self.temperature_plot)
-        self.thickness_plot.setXLink(self.temperature_plot)
-
-        self.temperature_plot.setLabel("left", "Temperature", units="°C")
-        self.rate_plot.setLabel("left", "Rate (Å/min)")
-        self.rate_plot.getAxis("left").enableAutoSIPrefix(False)
-        self.thickness_plot.setLabel("left", "Thickness (Å)")
-        self.thickness_plot.setLabel("bottom", "Elapsed time (h:mm:ss)")
-
-        # Same width for all left axes, so the plot areas line up.
-        for plot in (self.temperature_plot, self.rate_plot, self.thickness_plot):
-            plot.getAxis("left").setWidth(70)
-        self.thickness_plot.getAxis("left").enableAutoSIPrefix(False)
-
         self.curves = {}
-        for plot, fields in [
-            (self.temperature_plot, ("temperature", "working_setpoint")),
-            (self.rate_plot, ("rate", "rate_target")),
-            (self.thickness_plot, ("thickness", None)),
-        ]:
-            plot.showGrid(x=True, y=True, alpha=0.3)
-            plot.setClipToView(True)
-            plot.setDownsampling(auto=True, mode="peak")
-            plot.getViewBox().setAutoVisible(y=True)
-            legend = plot.addLegend(offset=(10, 10))
-            legend.setLabelTextColor("k")
+        self.plot_columns: list[dict[str, pg.PlotItem]] = []
+        self.all_plots: list[pg.PlotItem] = []
 
-            for i, cell in enumerate(config.cells):
-                color = COLORS[i % len(COLORS)]
-                solid, dashed = fields
-                self.curves[(i, solid)] = plot.plot(
-                    pen=pg.mkPen(color, width=2), name=cell.name
-                )
-                if dashed is None:
-                    continue
-                self.curves[(i, dashed)] = plot.plot(
-                    pen=pg.mkPen(color, width=1, style=Qt.PenStyle.DashLine),
-                    name=f"{cell.name} {'setpoint' if plot is self.temperature_plot else 'target'}",
-                )
+        for i, cell in enumerate(config.cells):
+            color = COLORS[i % len(COLORS)]
+            faint = pg.mkColor(color)
+            faint.setAlpha(70)
+            solid = pg.mkPen(color, width=2)
+            dashed = pg.mkPen(color, width=1, style=Qt.PenStyle.DashLine)
 
-            if plot is self.rate_plot:
-                for i, cell in enumerate(config.cells):
-                    faint = pg.mkColor(COLORS[i % len(COLORS)])
-                    faint.setAlpha(70)
-                    curve = plot.plot(
-                        pen=pg.mkPen(faint, width=1),
-                        name=f"{cell.name} QCM rate",
-                    )
-                    curve.setZValue(-1)
-                    self.curves[(i, "qcm_rate_filtered")] = curve
+            column = {}
+            for row, name in enumerate(["temperature", "rate", "thickness"]):
+                plot = plots.addPlot(
+                    row=row, col=i, axisItems={"bottom": ElapsedAxis("bottom")}
+                )
+                plot.showGrid(x=True, y=True, alpha=0.3)
+                plot.setClipToView(True)
+                plot.setDownsampling(auto=True, mode="peak")
+                plot.getViewBox().setAutoVisible(y=True)
+                axis = plot.getAxis("left")
+                axis.enableAutoSIPrefix(False)
+                # Same width for all left axes, so the plot areas line up.
+                axis.setWidth(70)
+                if self.all_plots:
+                    plot.setXLink(self.all_plots[0])
+                column[name] = plot
+                self.all_plots.append(plot)
+
+            column["temperature"].setTitle(
+                cell.name, color=color, size="11pt", bold=True
+            )
+            column["temperature"].setLabel("left", "Temperature (°C)")
+            column["rate"].setLabel("left", "Rate (Å/min)")
+            column["thickness"].setLabel("left", "Thickness (Å)")
+            column["thickness"].setLabel("bottom", "Elapsed time (h:mm:ss)")
+
+            def legend(plot):
+                item = plot.addLegend(offset=(10, 10))
+                item.setLabelTextColor("k")
+
+            legend(column["temperature"])
+            self.curves[(i, "temperature")] = column["temperature"].plot(
+                pen=solid, name="Temperature"
+            )
+            self.curves[(i, "working_setpoint")] = column["temperature"].plot(
+                pen=dashed, name="Setpoint"
+            )
+
+            legend(column["rate"])
+            self.curves[(i, "rate")] = column["rate"].plot(
+                pen=solid, name=f"{config.rate.window:g} s fit"
+            )
+            self.curves[(i, "rate_target")] = column["rate"].plot(
+                pen=dashed, name="Target"
+            )
+            qcm = column["rate"].plot(pen=pg.mkPen(faint, width=1), name="QCM")
+            qcm.setZValue(-1)
+            self.curves[(i, "qcm_rate_filtered")] = qcm
+
+            self.curves[(i, "thickness")] = column["thickness"].plot(pen=solid)
+
+            self.plot_columns.append(column)
 
         # Event log
         self.events = QPlainTextEdit()
@@ -508,6 +513,9 @@ class MainWindow(QMainWindow):
             "color: #2e7d32; font-weight: bold;" if active else "color: #b71c1c;"
         )
 
+    def _is_top(self, plot: pg.PlotItem) -> bool:
+        return any(plot is column["temperature"] for column in self.plot_columns)
+
     def _reset_clicked(self) -> None:
         answer = QMessageBox.question(
             self,
@@ -537,11 +545,11 @@ class MainWindow(QMainWindow):
         self._reference = sample.since_start - sample.elapsed
 
         if sample.reset:
-            for plot in (self.temperature_plot, self.rate_plot, self.thickness_plot):
+            for plot in self.all_plots:
                 line = pg.InfiniteLine(
                     angle=90,
                     pen=pg.mkPen("#757575", width=1, style=Qt.PenStyle.DotLine),
-                    label="reset" if plot is self.temperature_plot else None,
+                    label="reset" if self._is_top(plot) else None,
                     labelOpts={"position": 0.95, "color": "#757575"},
                 )
                 plot.addItem(line)
@@ -586,13 +594,13 @@ class MainWindow(QMainWindow):
             line.setPos(position - self._reference)
 
         if self.window_seconds is None:
-            self.temperature_plot.enableAutoRange(x=True)
+            self.all_plots[0].enableAutoRange(x=True)
         else:
             end = self._latest - self._reference
-            self.temperature_plot.setXRange(
+            self.all_plots[0].setXRange(
                 end - self.window_seconds, end, padding=0
             )
-        for plot in (self.temperature_plot, self.rate_plot, self.thickness_plot):
+        for plot in self.all_plots:
             plot.enableAutoRange(y=True)
 
     # ------------------------------------------------------------------
